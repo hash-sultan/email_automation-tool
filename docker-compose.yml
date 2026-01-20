@@ -1,0 +1,182 @@
+# XenFlow Mailer - Docker Compose Configuration
+# One-command deployment for the entire system
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: xenflow_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-xenflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-xenflow_secret_2024}
+      POSTGRES_DB: ${POSTGRES_DB:-xenflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-xenflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - xenflow_network
+
+  # Redis Queue
+  redis:
+    image: redis:7-alpine
+    container_name: xenflow_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - xenflow_network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xenflow_backend
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-xenflow}:${POSTGRES_PASSWORD:-xenflow_secret_2024}@db:5432/${POSTGRES_DB:-xenflow}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-in-production}
+      - DEBUG=${DEBUG:-false}
+      - ENVIRONMENT=${ENVIRONMENT:-production}
+      - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID:-}
+      - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET:-}
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import httpx; httpx.get('http://localhost:8000/health').raise_for_status()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - xenflow_network
+
+  # Celery Worker (Email Sending)
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xenflow_worker
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker --loglevel=info --queues=emails,followups,default -c 2
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-xenflow}:${POSTGRES_PASSWORD:-xenflow_secret_2024}@db:5432/${POSTGRES_DB:-xenflow}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-in-production}
+      - GMAIL_CLIENT_ID=${GMAIL_CLIENT_ID:-}
+      - GMAIL_CLIENT_SECRET=${GMAIL_CLIENT_SECRET:-}
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - xenflow_network
+
+  # Celery Worker (IMAP Monitoring)
+  worker_imap:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xenflow_worker_imap
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app worker --loglevel=info --queues=imap -c 1
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-xenflow}:${POSTGRES_PASSWORD:-xenflow_secret_2024}@db:5432/${POSTGRES_DB:-xenflow}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-in-production}
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - xenflow_network
+
+  # Celery Beat (Scheduler)
+  beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xenflow_beat
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-xenflow}:${POSTGRES_PASSWORD:-xenflow_secret_2024}@db:5432/${POSTGRES_DB:-xenflow}
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - SECRET_KEY=${SECRET_KEY:-your-super-secret-key-change-in-production}
+    depends_on:
+      - backend
+      - redis
+    networks:
+      - xenflow_network
+
+  # Frontend Dashboard
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: xenflow_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - xenflow_network
+
+  # Flower (Celery Monitoring) - Optional
+  flower:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: xenflow_flower
+    restart: unless-stopped
+    command: celery -A app.workers.celery_app flower --port=5555
+    env_file:
+      - .env
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - DATABASE_URL=postgresql://xenflow:${POSTGRES_PASSWORD:-xenflow}@db:5432/xenflow
+    ports:
+      - "5555:5555"
+    depends_on:
+      - redis
+    networks:
+      - xenflow_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  xenflow_network:
+    driver: bridge
+
