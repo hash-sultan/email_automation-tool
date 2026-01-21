@@ -3,7 +3,7 @@ XenFlow Mailer - Leads API
 """
 
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Query
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
 
@@ -156,8 +156,8 @@ def delete_lead(lead_id: int, db: Session = Depends(get_db)):
 @router.post("/import")
 async def import_leads(
     file: UploadFile = File(...),
-    campaign_id: Optional[int] = None,
-    skip_duplicates: bool = True,
+    campaign_id: Optional[int] = Form(None),
+    skip_duplicates: bool = Form(True),
     db: Session = Depends(get_db)
 ):
     """Import leads from CSV file."""

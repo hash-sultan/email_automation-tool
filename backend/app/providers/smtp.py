@@ -61,8 +61,14 @@ class SMTPProvider(BaseEmailProvider):
             # Create SSL context for secure connection (when TLS is enabled)
             ssl_context = ssl.create_default_context() if self.use_tls else None
 
-            # For port 465, use implicit TLS from the start
-            use_tls = self.use_tls and self.smtp_port == 465
+            # TLS strategy:
+            # - Port 465: implicit TLS (use_tls=True, no STARTTLS)
+            # - Other ports (e.g. 587): connect plain, then upgrade with STARTTLS
+            if self.use_tls and self.smtp_port == 465:
+                use_tls = True
+            else:
+                # For STARTTLS and non‑TLS connections, start without TLS
+                use_tls = False
             
             self._client = aiosmtplib.SMTP(
                 hostname=self.smtp_host,
@@ -73,9 +79,18 @@ class SMTPProvider(BaseEmailProvider):
             
             await self._client.connect()
             
-            # For STARTTLS (e.g. Gmail on 587): upgrade connection only if not already TLS
-            if self.use_tls and self.smtp_port != 465 and not self._client.is_tls:
-                await self._client.starttls(tls_context=ssl_context)
+            # For STARTTLS (e.g. 587): upgrade connection after connect
+            if self.use_tls and self.smtp_port != 465:
+                try:
+                    await self._client.starttls(tls_context=ssl_context)
+                except Exception as e:
+                    # Some servers are already in TLS mode and will reject STARTTLS
+                    if "Connection already using TLS" in str(e):
+                        logger.warning(
+                            "STARTTLS skipped: connection already using TLS",
+                        )
+                    else:
+                        raise
             
             # Authenticate
             if self.smtp_username and self.smtp_password:

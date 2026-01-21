@@ -97,9 +97,10 @@ export interface Campaign {
   template?: Template;
   total_leads: number;
   emails_sent: number;
-  emails_opened: number;
-  emails_replied: number;
-  emails_bounced: number;
+  emails_today: number;
+  replies_count: number;
+  bounces_count: number;
+  unsubscribes_count: number;
   followup_enabled: boolean;
   followup_delay_days: number;
   max_followups: number;

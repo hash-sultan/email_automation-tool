@@ -52,7 +52,8 @@ def check_replies_task(self, sender_id: int, since_hours: int = 24):
             loop.close()
             
             # Update sender last check time
-            sender.last_connection_check = db.func.now()
+            from sqlalchemy.sql import func
+            sender.last_connection_check = func.now()
             sender.connection_error = None
             db.commit()
             

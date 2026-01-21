@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   X,
   Server,
+  Pencil,
 } from 'lucide-react'
 import Button from '../components/Button'
 import Badge from '../components/Badge'
@@ -54,6 +55,7 @@ export default function Senders() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showModal, setShowModal] = useState(false)
+  const [editingSenderId, setEditingSenderId] = useState<number | null>(null)
   const [formData, setFormData] = useState<SenderFormData>(defaultFormData)
   const [submitting, setSubmitting] = useState(false)
 
@@ -73,6 +75,32 @@ export default function Senders() {
   useEffect(() => {
     fetchSenders()
   }, [])
+
+  const openAddModal = () => {
+    setEditingSenderId(null)
+    setFormData(defaultFormData)
+    setShowModal(true)
+  }
+
+  const openEditModal = (sender: Sender) => {
+    setFormData({
+      email: sender.email,
+      name: sender.name,
+      provider: sender.provider === 'smtp' ? 'smtp' : sender.provider,
+      smtp_host: sender.smtp_host || 'smtp.gmail.com',
+      smtp_port: sender.smtp_port || 587,
+      smtp_username: sender.smtp_username || sender.email,
+      smtp_password: '',
+      use_tls: sender.use_tls ?? true,
+      daily_limit: sender.daily_limit,
+      imap_host: sender.imap_host || '',
+      imap_port: sender.imap_port || 993,
+      imap_username: sender.email,
+      imap_password: '',
+    })
+    setEditingSenderId(sender.id)
+    setShowModal(true)
+  }
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -102,32 +130,61 @@ export default function Senders() {
       const providerType: 'custom_smtp' | 'gmail' | 'outlook' = 
         formData.provider === 'smtp' ? 'custom_smtp' : formData.provider
 
-      const payload: SenderCreate = {
-        email: formData.email.trim(),
-        name: (formData.name || formData.email).trim(),
-        provider_type: providerType,
-        base_daily_limit: formData.daily_limit,
-        smtp_config: {
-          host: formData.smtp_host.trim(),
-          port: formData.smtp_port,
-          username: (formData.smtp_username || formData.email).trim(),
-          password: formData.smtp_password,
-          use_tls: formData.use_tls,
-        },
-        ...(formData.imap_host && {
-          imap_config: {
-            host: formData.imap_host.trim(),
-            port: formData.imap_port,
-            username: (formData.imap_username || formData.email).trim(),
-            password: formData.imap_password || formData.smtp_password,
-            use_ssl: true,
+      if (editingSenderId) {
+        // Update existing sender
+        const updatePayload: any = {
+          name: (formData.name || formData.email).trim(),
+          base_daily_limit: formData.daily_limit,
+          smtp_config: {
+            host: formData.smtp_host.trim(),
+            port: formData.smtp_port,
+            username: (formData.smtp_username || formData.email).trim(),
+            password: formData.smtp_password,
+            use_tls: formData.use_tls,
           },
-        }),
+          ...(formData.imap_host && {
+            imap_config: {
+              host: formData.imap_host.trim(),
+              port: formData.imap_port,
+              username: (formData.imap_username || formData.email).trim(),
+              password: formData.imap_password || formData.smtp_password,
+              use_ssl: true,
+              folder: 'INBOX',
+            },
+          }),
+        }
+
+        await sendersApi.update(editingSenderId, updatePayload)
+      } else {
+        // Create new sender
+        const payload: SenderCreate = {
+          email: formData.email.trim(),
+          name: (formData.name || formData.email).trim(),
+          provider_type: providerType,
+          base_daily_limit: formData.daily_limit,
+          smtp_config: {
+            host: formData.smtp_host.trim(),
+            port: formData.smtp_port,
+            username: (formData.smtp_username || formData.email).trim(),
+            password: formData.smtp_password,
+            use_tls: formData.use_tls,
+          },
+          ...(formData.imap_host && {
+            imap_config: {
+              host: formData.imap_host.trim(),
+              port: formData.imap_port,
+              username: (formData.imap_username || formData.email).trim(),
+              password: formData.imap_password || formData.smtp_password,
+              use_ssl: true,
+            },
+          }),
+        }
+
+        await sendersApi.create(payload)
       }
 
-      console.log('Sending payload:', JSON.stringify(payload, null, 2))
-      await sendersApi.create(payload)
       setShowModal(false)
+      setEditingSenderId(null)
       setFormData(defaultFormData)
       fetchSenders()
     } catch (err) {
@@ -216,7 +273,7 @@ export default function Senders() {
           <Button variant="ghost" onClick={fetchSenders} disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </Button>
-          <Button onClick={() => setShowModal(true)}>
+          <Button onClick={openAddModal}>
             <Plus className="w-4 h-4 mr-2" />
             Add Sender
           </Button>
@@ -254,7 +311,7 @@ export default function Senders() {
           <p className="text-xen-dark-400 mb-6">
             Add your first email sender to start sending campaigns
           </p>
-          <Button onClick={() => setShowModal(true)}>
+          <Button onClick={openAddModal}>
             <Plus className="w-4 h-4 mr-2" />
             Add Your First Sender
           </Button>
@@ -324,6 +381,15 @@ export default function Senders() {
                 <Button
                   variant="ghost"
                   size="sm"
+                  onClick={() => openEditModal(sender)}
+                  className="flex-1"
+                >
+                  <Pencil className="w-4 h-4 mr-1" />
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onClick={() => handleVerify(sender.id)}
                   className="flex-1"
                 >
@@ -371,7 +437,9 @@ export default function Senders() {
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold text-white">Add Email Sender</h2>
+                <h2 className="text-xl font-semibold text-white">
+                  {editingSenderId ? 'Edit Email Sender' : 'Add Email Sender'}
+                </h2>
                 <button
                   onClick={() => setShowModal(false)}
                   className="p-2 rounded-lg hover:bg-xen-dark-800 transition-colors"
@@ -503,6 +571,58 @@ export default function Senders() {
                   </ol>
                 </div>
 
+                {/* IMAP Settings (optional, for reply tracking) */}
+                <div className="border-t border-xen-dark-700 pt-4">
+                  <h3 className="text-sm font-medium text-xen-dark-300 mb-3">IMAP Settings (for reply tracking)</h3>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs text-xen-dark-400 mb-1">IMAP Host</label>
+                      <input
+                        type="text"
+                        value={formData.imap_host}
+                        onChange={(e) => setFormData({ ...formData, imap_host: e.target.value })}
+                        className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                        placeholder="imap.gmail.com"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-xen-dark-400 mb-1">Port</label>
+                      <input
+                        type="number"
+                        value={formData.imap_port}
+                        onChange={(e) => setFormData({ ...formData, imap_port: parseInt(e.target.value) })}
+                        className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mt-3">
+                    <label className="block text-xs text-xen-dark-400 mb-1">IMAP Username</label>
+                    <input
+                      type="text"
+                      value={formData.imap_username}
+                      onChange={(e) => setFormData({ ...formData, imap_username: e.target.value })}
+                      className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                      placeholder="Usually same as email"
+                    />
+                  </div>
+
+                  <div className="mt-3">
+                    <label className="block text-xs text-xen-dark-400 mb-1">IMAP Password / App Password</label>
+                    <input
+                      type="password"
+                      value={formData.imap_password}
+                      onChange={(e) => setFormData({ ...formData, imap_password: e.target.value })}
+                      className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                      placeholder="Leave empty to reuse SMTP password"
+                    />
+                    <p className="text-xs text-xen-dark-500 mt-1">
+                      For Gmail, this should be the same App Password you use for SMTP.
+                    </p>
+                  </div>
+                </div>
+
                 {/* Submit */}
                 <div className="flex items-center gap-3 pt-4">
                   <Button
@@ -517,12 +637,12 @@ export default function Senders() {
                     {submitting ? (
                       <>
                         <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                        Adding...
+                        {editingSenderId ? 'Saving...' : 'Adding...'}
                       </>
                     ) : (
                       <>
                         <Plus className="w-4 h-4 mr-2" />
-                        Add Sender
+                        {editingSenderId ? 'Save Changes' : 'Add Sender'}
                       </>
                     )}
                   </Button>

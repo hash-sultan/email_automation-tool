@@ -300,7 +300,7 @@ export default function Dashboard() {
                     <div>
                       <p className="font-medium text-white">{campaign.name}</p>
                       <p className="text-sm text-xen-dark-400">
-                        {campaign.emails_sent} sent • {campaign.emails_replied} replies
+                        {campaign.emails_sent} sent • {campaign.replies_count} replies
                       </p>
                     </div>
                   </div>

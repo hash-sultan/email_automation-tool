@@ -194,6 +194,15 @@ class CSVImporter:
         # Commit all leads
         try:
             self.db.commit()
+            
+            # Update campaign's total_leads count if campaign_id was provided
+            if campaign_id and result["success"] > 0:
+                from app.models import Campaign
+                campaign = self.db.query(Campaign).filter(Campaign.id == campaign_id).first()
+                if campaign:
+                    campaign.total_leads = self.db.query(Lead).filter(Lead.campaign_id == campaign_id).count()
+                    self.db.commit()
+                    
         except Exception as e:
             self.db.rollback()
             result["success"] = 0
@@ -208,7 +217,8 @@ class CSVImporter:
                 "success": result["success"],
                 "failed": result["failed"],
                 "duplicates": result["duplicates"],
-                "suppressed": result["suppressed"]
+                "suppressed": result["suppressed"],
+                "campaign_id": campaign_id
             }
         )
         

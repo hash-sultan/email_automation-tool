@@ -107,10 +107,32 @@ class ReplyDetector:
             
             message_ids = data[0].split()
             
+            logger.info(
+                f"Found {len(message_ids)} messages to check for sender {sender.email}",
+                extra={"since_hours": since_hours}
+            )
+            
+            # Check recent messages (last 100 to avoid timeout)
+            checked_count = 0
+            processed_count = 0
             for msg_id in message_ids[-100:]:  # Limit to last 100 messages
+                checked_count += 1
                 reply = await self._process_email(imap, msg_id.decode(), sender)
                 if reply:
                     detected_replies.append(reply)
+                    processed_count += 1
+                    logger.info(
+                        f"Reply detected from {reply.get('from_email')}",
+                        extra={
+                            "email_log_id": reply.get('email_log_id'),
+                            "subject": reply.get('subject', '')[:50]
+                        }
+                    )
+            
+            logger.info(
+                f"Checked {checked_count} messages, found {len(detected_replies)} replies",
+                extra={"checked": checked_count, "found": len(detected_replies)}
+            )
             
             await imap.logout()
             
@@ -165,38 +187,111 @@ class ReplyDetector:
             # Check if this is a reply to one of our emails
             original_message_id = None
             
+            # Helper to normalize message IDs (remove angle brackets, trim whitespace)
+            def normalize_msg_id(msg_id: str) -> str:
+                if not msg_id:
+                    return ""
+                return msg_id.strip('<> ').strip()
+            
             if in_reply_to:
-                original_message_id = in_reply_to.strip('<> ')
+                original_message_id = normalize_msg_id(in_reply_to)
             elif references:
                 # Get the first (original) message ID from references
                 ref_ids = references.split()
                 if ref_ids:
-                    original_message_id = ref_ids[0].strip('<> ')
+                    original_message_id = normalize_msg_id(ref_ids[0])
             
-            if not original_message_id:
-                # Check if subject starts with Re: and matches a sent email
-                if subject.lower().startswith('re:'):
-                    original_subject = subject[3:].strip()
-                    # Try to find matching sent email
-                    email_log = self.db.query(EmailLog).filter(
-                        and_(
-                            EmailLog.sender_id == sender.id,
-                            EmailLog.to_email == from_email,
-                            EmailLog.subject == original_subject
+            # Try to find matching email log by message ID
+            email_log = None
+            if original_message_id:
+                # Normalize the original_message_id for comparison
+                normalized_original = normalize_msg_id(original_message_id)
+                
+                # Get all email logs for this sender and check normalized IDs
+                # This is more reliable than SQL comparison with angle brackets
+                all_logs = self.db.query(EmailLog).filter(
+                    EmailLog.sender_id == sender.id,
+                    EmailLog.message_id.isnot(None)
+                ).all()
+                
+                for log in all_logs:
+                    normalized_log_id = normalize_msg_id(log.message_id)
+                    if normalized_log_id == normalized_original:
+                        email_log = log
+                        logger.debug(
+                            f"Matched reply by message ID",
+                            extra={
+                                "original": original_message_id,
+                                "matched_log_id": log.id,
+                                "from": from_email
+                            }
                         )
+                        break
+                
+                # Fallback: Try LIKE match if exact match failed
+                if not email_log:
+                    email_log = self.db.query(EmailLog).filter(
+                        EmailLog.message_id.like(f"%{normalized_original}%")
                     ).first()
-                    
-                    if email_log:
-                        original_message_id = email_log.message_id
-                else:
-                    return None
             
-            # Verify this message ID is from one of our sent emails
-            email_log = self.db.query(EmailLog).filter(
-                EmailLog.message_id == original_message_id
-            ).first()
+            # If still not found, try subject matching
+            if not email_log and subject.lower().startswith('re:'):
+                original_subject = subject[3:].strip()
+                # Remove common reply prefixes (Re:, RE:, Fwd:, etc.)
+                original_subject = re.sub(r'^(re|fwd?):\s*', '', original_subject, flags=re.IGNORECASE).strip()
+                
+                # Try to find matching sent email by subject and recipient
+                email_log = self.db.query(EmailLog).filter(
+                    and_(
+                        EmailLog.sender_id == sender.id,
+                        EmailLog.to_email.ilike(from_email),  # Case-insensitive
+                        EmailLog.subject.ilike(f"%{original_subject}%")  # Partial match
+                    )
+                ).order_by(EmailLog.sent_at.desc()).first()  # Get most recent match
+                
+                if email_log:
+                    logger.info(
+                        f"Reply matched by subject: '{subject}' -> '{email_log.subject}'",
+                        extra={
+                            "from": from_email,
+                            "to": email_log.to_email,
+                            "email_log_id": email_log.id
+                        }
+                    )
+            
+            # If still not found, try matching by recipient email and sender
+            # This is a fallback for cases where headers are missing
+            if not email_log:
+                # Look for any email sent to this person from this sender recently
+                email_log = self.db.query(EmailLog).filter(
+                    and_(
+                        EmailLog.sender_id == sender.id,
+                        EmailLog.to_email.ilike(from_email),
+                        EmailLog.sent_at >= datetime.utcnow() - timedelta(days=7)  # Within last 7 days
+                    )
+                ).order_by(EmailLog.sent_at.desc()).first()
+                
+                if email_log:
+                    logger.info(
+                        f"Reply matched by recipient fallback: {from_email}",
+                        extra={
+                            "email_log_id": email_log.id,
+                            "subject": subject
+                        }
+                    )
             
             if not email_log:
+                # Only log debug for potential replies (has Re: or headers)
+                if subject.lower().startswith('re:') or in_reply_to or references:
+                    logger.debug(
+                        f"No matching email log found for potential reply",
+                        extra={
+                            "from": from_email,
+                            "subject": subject[:50],
+                            "in_reply_to": in_reply_to[:50] if in_reply_to else None,
+                            "references": references[:100] if references else None
+                        }
+                    )
                 return None
             
             # Get email body to check for unsubscribe

@@ -175,7 +175,7 @@ export default function Campaigns() {
     active: campaigns.filter(c => c.status === 'active').length,
     paused: campaigns.filter(c => c.status === 'paused').length,
     totalSent: campaigns.reduce((sum, c) => sum + c.emails_sent, 0),
-    totalReplies: campaigns.reduce((sum, c) => sum + c.emails_replied, 0),
+    totalReplies: campaigns.reduce((sum, c) => sum + c.replies_count, 0),
   }
 
   return (
@@ -316,7 +316,7 @@ export default function Campaigns() {
           {campaigns.map((campaign, index) => {
             const status = statusConfig[campaign.status] || statusConfig.draft
             const replyRate = campaign.emails_sent > 0 
-              ? ((campaign.emails_replied / campaign.emails_sent) * 100).toFixed(1)
+              ? ((campaign.replies_count / campaign.emails_sent) * 100).toFixed(1)
               : '0.0'
 
             return (
@@ -367,7 +367,7 @@ export default function Campaigns() {
                     <p className="text-xs text-xen-dark-500">Sent</p>
                   </div>
                   <div className="p-2 rounded-lg bg-xen-dark-800/50 text-center">
-                    <p className="text-lg font-bold text-green-400">{campaign.emails_replied}</p>
+                    <p className="text-lg font-bold text-green-400">{campaign.replies_count}</p>
                     <p className="text-xs text-xen-dark-500">Replies</p>
                   </div>
                 </div>
@@ -386,12 +386,12 @@ export default function Campaigns() {
                   </div>
                 </div>
 
-                {/* Bounce indicator */}
-                {campaign.emails_bounced > 0 && (
+              {/* Bounce indicator */}
+              {campaign.bounces_count > 0 && (
                   <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/30 mb-4">
                     <div className="flex items-center gap-2 text-sm text-red-400">
                       <AlertCircle className="w-4 h-4" />
-                      <span>{campaign.emails_bounced} bounces</span>
+                    <span>{campaign.bounces_count} bounces</span>
                     </div>
                   </div>
                 )}
