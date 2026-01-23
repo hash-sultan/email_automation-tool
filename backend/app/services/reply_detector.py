@@ -113,12 +113,28 @@ class ReplyDetector:
             )
             
             # Check recent messages (last 100 to avoid timeout)
+            # Track processed reply Message-IDs to avoid processing the same reply multiple times
+            processed_reply_message_ids = set()
             checked_count = 0
             processed_count = 0
             for msg_id in message_ids[-100:]:  # Limit to last 100 messages
                 checked_count += 1
                 reply = await self._process_email(imap, msg_id.decode(), sender)
                 if reply:
+                    # Get the reply's Message-ID to deduplicate
+                    reply_message_id = reply.get('reply_message_id')
+                    if reply_message_id and reply_message_id in processed_reply_message_ids:
+                        # This reply email was already processed, skip to avoid duplicate counting
+                        logger.debug(
+                            f"Skipping duplicate reply email: {reply_message_id}",
+                            extra={"from": reply.get('from_email')}
+                        )
+                        continue
+                    
+                    # Track this reply message ID to prevent processing the same reply email twice
+                    if reply_message_id:
+                        processed_reply_message_ids.add(reply_message_id)
+                    
                     detected_replies.append(reply)
                     processed_count += 1
                     logger.info(
@@ -172,12 +188,19 @@ class ReplyDetector:
             
             msg = email.message_from_bytes(header_data)
             
+            # Helper to normalize message IDs (remove angle brackets, trim whitespace)
+            def normalize_msg_id(msg_id: str) -> str:
+                if not msg_id:
+                    return ""
+                return msg_id.strip('<> ').strip()
+            
             # Extract relevant headers
             from_email = self._extract_email(msg.get('From', ''))
             subject = self._decode_header(msg.get('Subject', ''))
             in_reply_to = msg.get('In-Reply-To', '')
             references = msg.get('References', '')
             message_id = msg.get('Message-ID', '')
+            reply_message_id = normalize_msg_id(message_id) if message_id else None
             date_str = msg.get('Date', '')
             
             # Skip if from our own sender
@@ -186,12 +209,6 @@ class ReplyDetector:
             
             # Check if this is a reply to one of our emails
             original_message_id = None
-            
-            # Helper to normalize message IDs (remove angle brackets, trim whitespace)
-            def normalize_msg_id(msg_id: str) -> str:
-                if not msg_id:
-                    return ""
-                return msg_id.strip('<> ').strip()
             
             if in_reply_to:
                 original_message_id = normalize_msg_id(in_reply_to)
@@ -313,6 +330,7 @@ class ReplyDetector:
                 "from_email": from_email,
                 "subject": subject,
                 "original_message_id": original_message_id,
+                "reply_message_id": reply_message_id,  # For deduplication
                 "email_log_id": email_log.id,
                 "lead_id": email_log.lead_id,
                 "campaign_id": email_log.campaign_id,
@@ -327,12 +345,25 @@ class ReplyDetector:
     async def _handle_reply(self, reply: Dict[str, Any], sender: Sender) -> None:
         """
         Handle a detected reply - update lead and campaign.
+        Counts each unique reply email, even if multiple replies match the same email_log.
         """
         lead_id = reply.get('lead_id')
         campaign_id = reply.get('campaign_id')
         email_log_id = reply.get('email_log_id')
+        reply_message_id = reply.get('reply_message_id')
         is_unsubscribe = reply.get('is_unsubscribe', False)
         
+        # Get email_log
+        email_log = None
+        if email_log_id:
+            email_log = self.db.query(EmailLog).filter(EmailLog.id == email_log_id).first()
+        
+        # Mark email_log as replied (if not already replied)
+        # This stops follow-ups, but we still count each unique reply email
+        if email_log and email_log.replied_at is None:
+            email_log.mark_replied()
+        
+        # Update lead (only if not already replied)
         if lead_id:
             lead = self.db.query(Lead).filter(Lead.id == lead_id).first()
             if lead and not lead.replied:
@@ -343,6 +374,9 @@ class ReplyDetector:
                     lead.mark_replied()
                     logger.info(f"Reply detected from {lead.email}")
         
+        # Always increment campaign count for each unique reply email
+        # We count unique reply emails, not unique email_logs
+        # This allows counting multiple replies to the same email
         if campaign_id:
             campaign = self.db.query(Campaign).filter(Campaign.id == campaign_id).first()
             if campaign:
@@ -350,11 +384,14 @@ class ReplyDetector:
                     campaign.unsubscribes_count += 1
                 else:
                     campaign.replies_count += 1
-        
-        if email_log_id:
-            email_log = self.db.query(EmailLog).filter(EmailLog.id == email_log_id).first()
-            if email_log:
-                email_log.mark_replied()
+                    logger.debug(
+                        f"Incremented reply count for campaign {campaign_id}",
+                        extra={
+                            "campaign_id": campaign_id,
+                            "email_log_id": email_log_id,
+                            "reply_message_id": reply_message_id
+                        }
+                    )
         
         self.db.commit()
     

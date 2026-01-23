@@ -59,8 +59,10 @@ export default function Campaigns() {
   const [submitting, setSubmitting] = useState(false)
   const [actionLoading, setActionLoading] = useState<number | null>(null)
 
-  const fetchData = async () => {
-    setLoading(true)
+  const fetchData = async (showLoading = true) => {
+    if (showLoading) {
+      setLoading(true)
+    }
     setError(null)
     try {
       const [campaignsData, sendersData, templatesData] = await Promise.all([
@@ -74,12 +76,22 @@ export default function Campaigns() {
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data')
     } finally {
-      setLoading(false)
+      if (showLoading) {
+        setLoading(false)
+      }
     }
   }
 
   useEffect(() => {
     fetchData()
+    
+    // Auto-refresh campaign data every 30 seconds to show updated reply counts
+    // Don't show loading spinner for auto-refresh to avoid UI flicker
+    const interval = setInterval(() => {
+      fetchData(false)
+    }, 30000) // Refresh every 30 seconds
+    
+    return () => clearInterval(interval)
   }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
