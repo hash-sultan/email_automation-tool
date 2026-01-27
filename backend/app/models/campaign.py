@@ -61,15 +61,15 @@ class Campaign(Base):
     
     # Schedule settings
     timezone = Column(String(50), default="America/New_York", nullable=False)
-    send_window_start = Column(Time, default=time(9, 0), nullable=False)  # 9 AM
-    send_window_end = Column(Time, default=time(17, 0), nullable=False)  # 5 PM
-    send_weekdays_only = Column(Boolean, default=True, nullable=False)
+    send_window_start = Column(Time, default=time(0, 0), nullable=False)  # 12 AM (24/7)
+    send_window_end = Column(Time, default=time(23, 59), nullable=False)  # 11:59 PM (24/7)
+    send_weekdays_only = Column(Boolean, default=False, nullable=False)  # Allow weekends
     
     # Rate limits (per campaign, within global limits)
-    daily_limit = Column(Integer, default=50, nullable=False)
-    hourly_limit = Column(Integer, default=10, nullable=False)
-    min_interval_seconds = Column(Integer, default=120, nullable=False)  # 2 minutes
-    max_interval_seconds = Column(Integer, default=300, nullable=False)  # 5 minutes
+    daily_limit = Column(Integer, default=200, nullable=False)  # 200/day = 1000 in 5 days
+    hourly_limit = Column(Integer, default=50, nullable=False)  # 50/hour allows 200/day in 4 hours
+    min_interval_seconds = Column(Integer, default=10, nullable=False)  # 10 seconds
+    max_interval_seconds = Column(Integer, default=10, nullable=False)  # 10 seconds
     
     # Follow-up settings
     followup_enabled = Column(Boolean, default=True, nullable=False)
@@ -121,10 +121,12 @@ class Campaign(Base):
     
     @property
     def reply_rate(self) -> float:
-        """Calculate reply rate"""
+        """Calculate reply rate (capped at 100%)"""
         if self.emails_sent == 0:
             return 0.0
-        return (self.replies_count / self.emails_sent) * 100
+        rate = (self.replies_count / self.emails_sent) * 100
+        # Cap at 100% (can't have more replies than emails sent)
+        return min(rate, 100.0)
     
     @property
     def is_safe_to_send(self) -> tuple:
@@ -132,9 +134,7 @@ class Campaign(Base):
         if self.bounce_rate >= self.max_bounce_rate:
             return False, f"Bounce rate {self.bounce_rate:.1f}% exceeds limit {self.max_bounce_rate}%"
         
-        complaint_rate = (self.unsubscribes_count / max(self.emails_sent, 1)) * 1000
-        if complaint_rate >= self.max_complaint_rate:
-            return False, f"Complaint rate too high"
+        # Complaint rate check removed - campaigns can resume regardless of unsubscribe rate
         
         return True, "Safe"
     

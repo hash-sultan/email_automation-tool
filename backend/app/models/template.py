@@ -44,6 +44,7 @@ class Template(Base):
     
     # Template settings
     is_active = Column(Boolean, default=True, nullable=False)
+    template_type = Column(String(20), default="initial", nullable=False)  # "initial" or "followup"
     
     # Track which placeholders are used
     placeholders_used = Column(JSON, default=list, nullable=False)

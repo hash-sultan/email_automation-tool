@@ -189,8 +189,29 @@ class SMTPProvider(BaseEmailProvider):
             
         except aiosmtplib.SMTPDataError as e:
             # Server rejected the message
-            logger.error(f"SMTP data error: {str(e)}")
-            return EmailResult.failed("DATA_ERROR", str(e))
+            error_msg = str(e)
+            error_code = getattr(e, 'code', None) or getattr(e, 'smtp_code', None)
+            logger.error(f"SMTP data error: {error_msg}")
+            
+            # Check for Gmail daily limit exceeded
+            # Error format: (550, '5.4.5 Daily user sending limit exceeded...')
+            error_str_lower = error_msg.lower()
+            if (error_code == 550 or "550" in error_msg) and (
+                "daily user sending limit exceeded" in error_str_lower or 
+                "5.4.5" in error_msg or
+                "daily sending limit" in error_str_lower
+            ):
+                # Calculate wait time until midnight (PST/PDT)
+                from datetime import datetime, timedelta
+                now = datetime.utcnow()
+                # Gmail resets at midnight Pacific Time (UTC-8 or UTC-7)
+                # Approximate: wait until next day UTC
+                tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                wait_seconds = int((tomorrow - now).total_seconds())
+                logger.warning(f"Gmail daily limit exceeded, wait {wait_seconds}s until reset")
+                return EmailResult.rate_limited(f"Gmail daily limit exceeded. Wait {wait_seconds} seconds until reset")
+            
+            return EmailResult.failed("DATA_ERROR", error_msg)
             
         except aiosmtplib.SMTPServerDisconnected:
             # Connection lost, try to reconnect

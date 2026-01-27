@@ -358,9 +358,13 @@ class ReplyDetector:
         if email_log_id:
             email_log = self.db.query(EmailLog).filter(EmailLog.id == email_log_id).first()
         
+        # Check if this reply has already been processed (email_log already marked as replied)
+        # This prevents counting the same reply multiple times across different check runs
+        is_new_reply = email_log is None or email_log.replied_at is None
+        
         # Mark email_log as replied (if not already replied)
-        # This stops follow-ups, but we still count each unique reply email
-        if email_log and email_log.replied_at is None:
+        # This stops follow-ups
+        if email_log and is_new_reply:
             email_log.mark_replied()
         
         # Update lead (only if not already replied)
@@ -374,10 +378,9 @@ class ReplyDetector:
                     lead.mark_replied()
                     logger.info(f"Reply detected from {lead.email}")
         
-        # Always increment campaign count for each unique reply email
-        # We count unique reply emails, not unique email_logs
-        # This allows counting multiple replies to the same email
-        if campaign_id:
+        # Only increment campaign count if this is a new reply (not already processed)
+        # This prevents counting the same reply multiple times across different check runs
+        if campaign_id and is_new_reply:
             campaign = self.db.query(Campaign).filter(Campaign.id == campaign_id).first()
             if campaign:
                 if is_unsubscribe:
@@ -392,6 +395,15 @@ class ReplyDetector:
                             "reply_message_id": reply_message_id
                         }
                     )
+        elif campaign_id and not is_new_reply:
+            logger.debug(
+                f"Skipping reply count increment - email_log {email_log_id} already marked as replied",
+                extra={
+                    "campaign_id": campaign_id,
+                    "email_log_id": email_log_id,
+                    "reply_message_id": reply_message_id
+                }
+            )
         
         self.db.commit()
     

@@ -100,9 +100,12 @@ class EmailService:
                 return EmailResult.failed("GLOBAL_LIMIT", global_reason)
             
             # Safety check 6: Rate limiter (Redis-based)
+            # New logic: 10s delay, 10min pause after 50 emails, daily limit only
             allowed, wait_time = await self.rate_limiter.check_rate_limit(
                 sender_id=sender.id,
-                campaign_id=campaign.id
+                campaign_id=campaign.id,
+                sender_daily_limit=sender.current_daily_limit,
+                campaign_daily_limit=campaign.daily_limit
             )
             if not allowed:
                 logger.warning(f"Rate limited, wait {wait_time}s")
@@ -194,8 +197,18 @@ class EmailService:
                 lead.step = followup_step
                 lead.last_sent_at = datetime.utcnow()
                 
+                # Update lead status to CONTACTED if this was the initial email
+                if followup_step == 0:
+                    from app.models.lead import LeadStatus
+                    lead.status = LeadStatus.CONTACTED
+                
                 # Record rate limit
                 await self.rate_limiter.record_send(sender.id, campaign.id)
+                
+                # Schedule next follow-up if this was an initial email (step 0)
+                if followup_step == 0 and campaign.followup_enabled:
+                    from app.workers.followup_worker import schedule_followup_task
+                    schedule_followup_task.delay(lead.id, campaign.id)
                 
                 logger.info(
                     f"Email sent successfully",

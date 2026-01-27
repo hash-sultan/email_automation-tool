@@ -39,12 +39,14 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = Field(default="redis://localhost:6379/1")
     
     # Email Safety Thresholds (NON-NEGOTIABLE)
-    MAX_EMAILS_PER_DAY: int = 200
-    MAX_EMAILS_PER_HOUR: int = 20
+    MAX_EMAILS_PER_DAY: int = 500  # Maximum per sender (hard limit)
+    MAX_EMAILS_PER_HOUR: int = 999999  # No hourly limit (disabled)
     MAX_BOUNCE_RATE: float = 0.05  # 5%
     MAX_COMPLAINT_RATE: float = 0.001  # 0.1%
-    MIN_SEND_INTERVAL_SECONDS: int = 60  # Minimum seconds between emails
-    MAX_SEND_INTERVAL_SECONDS: int = 300  # Maximum seconds between emails
+    MIN_SEND_INTERVAL_SECONDS: int = 10  # 10 seconds between emails
+    MAX_SEND_INTERVAL_SECONDS: int = 10  # 10 seconds between emails
+    EMAIL_BATCH_SIZE: int = 50  # Pause after this many emails
+    BATCH_PAUSE_SECONDS: int = 600  # 10 minutes pause after batch
     
     # Warmup Configuration
     WARMUP_ENABLED: bool = True
@@ -109,11 +111,11 @@ def get_settings() -> Settings:
 class SafetyLimits:
     """Hard-coded safety limits that cannot be overridden"""
     
-    ABSOLUTE_MAX_EMAILS_PER_DAY = 500  # Hard cap
-    ABSOLUTE_MAX_EMAILS_PER_HOUR = 50  # Hard cap
+    ABSOLUTE_MAX_EMAILS_PER_DAY = 500  # Hard cap (no sender can exceed this)
+    ABSOLUTE_MAX_EMAILS_PER_HOUR = 999999  # No hourly limit (disabled)
     ABSOLUTE_MAX_BOUNCE_RATE = 0.10  # 10% - system stops
     ABSOLUTE_MAX_COMPLAINT_RATE = 0.005  # 0.5% - system stops
-    MIN_EMAIL_INTERVAL_SECONDS = 30  # Never send faster than this
+    MIN_EMAIL_INTERVAL_SECONDS = 10  # 10 seconds between emails
     
     @classmethod
     def is_safe_to_send(cls, daily_sent: int, hourly_sent: int, 
@@ -125,14 +127,12 @@ class SafetyLimits:
         if daily_sent >= cls.ABSOLUTE_MAX_EMAILS_PER_DAY:
             return False, f"Daily limit reached ({cls.ABSOLUTE_MAX_EMAILS_PER_DAY})"
         
-        if hourly_sent >= cls.ABSOLUTE_MAX_EMAILS_PER_HOUR:
-            return False, f"Hourly limit reached ({cls.ABSOLUTE_MAX_EMAILS_PER_HOUR})"
+        # Hourly limit check removed - no hourly limits
         
         if bounce_rate >= cls.ABSOLUTE_MAX_BOUNCE_RATE:
             return False, f"Bounce rate too high ({bounce_rate:.1%})"
         
-        if complaint_rate >= cls.ABSOLUTE_MAX_COMPLAINT_RATE:
-            return False, f"Complaint rate too high ({complaint_rate:.2%})"
+        # Complaint rate check removed - system will continue sending regardless of unsubscribe rate
         
         return True, "Safe to send"
 

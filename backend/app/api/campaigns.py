@@ -77,11 +77,41 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
 @router.post("/", response_model=CampaignResponse)
 def create_campaign(campaign_data: CampaignCreate, db: Session = Depends(get_db)):
     """Create a new campaign."""
-    campaign = Campaign(**campaign_data.model_dump())
+    from app.models import Template, FollowUpTemplate
+    
+    # Extract follow-up template IDs before creating campaign
+    followup_template_ids = campaign_data.followup_template_ids or []
+    campaign_dict = campaign_data.model_dump(exclude={'followup_template_ids'})
+    
+    campaign = Campaign(**campaign_dict)
     
     db.add(campaign)
     db.commit()
     db.refresh(campaign)
+    
+    # Create FollowUpTemplate records from selected templates
+    if followup_template_ids and campaign.followup_enabled:
+        followup_templates = db.query(Template).filter(
+            Template.id.in_(followup_template_ids),
+            Template.is_active == True
+        ).all()
+        
+        for idx, template in enumerate(followup_templates, start=1):
+            followup_template = FollowUpTemplate(
+                campaign_id=campaign.id,
+                step=idx,
+                delay_days=campaign.followup_delay_days,
+                delay_hours=0,
+                subject=template.subject,
+                body_html=template.body_html,
+                body_plain=template.body_plain,
+                reply_to_thread=True,
+                is_active=True
+            )
+            db.add(followup_template)
+        
+        db.commit()
+        db.refresh(campaign)
     
     return CampaignResponse.model_validate(campaign)
 

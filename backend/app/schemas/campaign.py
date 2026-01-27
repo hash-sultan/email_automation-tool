@@ -12,13 +12,13 @@ class CampaignBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     timezone: str = "America/New_York"
-    send_window_start: time = time(9, 0)
-    send_window_end: time = time(17, 0)
-    send_weekdays_only: bool = True
-    daily_limit: int = Field(default=50, ge=1, le=200)
-    hourly_limit: int = Field(default=10, ge=1, le=50)
-    min_interval_seconds: int = Field(default=120, ge=60, le=600)
-    max_interval_seconds: int = Field(default=300, ge=120, le=900)
+    send_window_start: time = time(0, 0)  # 12 AM (24/7)
+    send_window_end: time = time(23, 59)  # 11:59 PM (24/7)
+    send_weekdays_only: bool = False  # Allow weekends
+    daily_limit: int = Field(default=200, ge=1, le=500)  # Allow up to 500/day
+    hourly_limit: int = Field(default=50, ge=1, le=100)  # Allow up to 100/hour
+    min_interval_seconds: int = Field(default=10, ge=10, le=600)
+    max_interval_seconds: int = Field(default=10, ge=10, le=900)
     followup_enabled: bool = True
     max_followup_steps: int = Field(default=3, ge=0, le=10)
     followup_delay_days: int = Field(default=3, ge=1, le=14)
@@ -28,14 +28,14 @@ class CampaignBase(BaseModel):
     
     @validator("daily_limit")
     def validate_daily_limit(cls, v):
-        if v > 200:
-            raise ValueError("Daily limit cannot exceed 200 for safety")
+        if v > 500:
+            raise ValueError("Daily limit cannot exceed 500 (provider limit)")
         return v
     
     @validator("hourly_limit")
     def validate_hourly_limit(cls, v):
-        if v > 50:
-            raise ValueError("Hourly limit cannot exceed 50 for safety")
+        if v > 100:
+            raise ValueError("Hourly limit cannot exceed 100 for safety")
         return v
 
 
@@ -43,6 +43,7 @@ class CampaignCreate(CampaignBase):
     """Schema for creating a campaign"""
     sender_id: int
     template_id: Optional[int] = None
+    followup_template_ids: Optional[List[int]] = Field(default=None, description="List of template IDs to use as follow-ups")
 
 
 class CampaignUpdate(BaseModel):

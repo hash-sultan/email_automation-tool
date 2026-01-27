@@ -34,15 +34,40 @@ const defaultFormData: LeadFormData = {
 
 const statusColors: Record<string, { bg: string; text: string }> = {
   new: { bg: 'bg-blue-500/20', text: 'text-blue-400' },
-  contacted: { bg: 'bg-yellow-500/20', text: 'text-yellow-400' },
+  queued: { bg: 'bg-orange-500/20', text: 'text-orange-400' },
+  contacted: { bg: 'bg-green-500/20', text: 'text-green-400' },
   replied: { bg: 'bg-green-500/20', text: 'text-green-400' },
   bounced: { bg: 'bg-red-500/20', text: 'text-red-400' },
   unsubscribed: { bg: 'bg-gray-500/20', text: 'text-gray-400' },
   converted: { bg: 'bg-purple-500/20', text: 'text-purple-400' },
 }
 
+// Map backend status to display name
+const getStatusDisplayName = (status: string): string => {
+  const statusMap: Record<string, string> = {
+    new: 'new',
+    queued: 'queued',
+    contacted: 'sent',
+    replied: 'replied',
+    bounced: 'bounced',
+    unsubscribed: 'unsubscribed',
+    converted: 'converted',
+  }
+  return statusMap[status] || status
+}
+
 export default function Leads() {
   const [leads, setLeads] = useState<Lead[]>([])
+  const [stats, setStats] = useState({
+    total: 0,
+    new: 0,
+    queued: 0,
+    contacted: 0,
+    replied: 0,
+    bounced: 0,
+    unsubscribed: 0,
+    converted: 0,
+  })
   const [campaigns, setCampaigns] = useState<Campaign[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -60,11 +85,13 @@ export default function Leads() {
     setLoading(true)
     setError(null)
     try {
-      const [leadsData, campaignsData] = await Promise.all([
-        leadsApi.list(selectedCampaign),
+      const [leadsResponse, campaignsData, statsData] = await Promise.all([
+        leadsApi.list(selectedCampaign, 1, 1000), // Fetch up to 1000 leads for display
         campaignsApi.list(),
+        leadsApi.stats(selectedCampaign), // Get accurate stats from API
       ])
-      setLeads(leadsData)
+      setLeads(leadsResponse.items)
+      setStats(statsData)
       setCampaigns(campaignsData)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data')
@@ -142,14 +169,7 @@ export default function Leads() {
     return matchesSearch && matchesStatus
   })
 
-  // Stats
-  const stats = {
-    total: leads.length,
-    new: leads.filter(l => l.status === 'new').length,
-    contacted: leads.filter(l => l.status === 'contacted').length,
-    replied: leads.filter(l => l.status === 'replied').length,
-    bounced: leads.filter(l => l.status === 'bounced').length,
-  }
+  // Stats are now fetched from API, so they're accurate
 
   return (
     <div className="space-y-6">
@@ -197,7 +217,8 @@ export default function Leads() {
         {[
           { label: 'Total', value: stats.total, color: 'text-white' },
           { label: 'New', value: stats.new, color: 'text-blue-400' },
-          { label: 'Contacted', value: stats.contacted, color: 'text-yellow-400' },
+          { label: 'Queued', value: stats.queued, color: 'text-orange-400' },
+          { label: 'Sent', value: stats.contacted, color: 'text-green-400' },
           { label: 'Replied', value: stats.replied, color: 'text-green-400' },
           { label: 'Bounced', value: stats.bounced, color: 'text-red-400' },
         ].map((stat) => (
@@ -257,7 +278,8 @@ export default function Leads() {
         >
           <option value="all">All Status</option>
           <option value="new">New</option>
-          <option value="contacted">Contacted</option>
+          <option value="queued">Queued</option>
+          <option value="contacted">Sent</option>
           <option value="replied">Replied</option>
           <option value="bounced">Bounced</option>
           <option value="unsubscribed">Unsubscribed</option>
@@ -346,8 +368,8 @@ export default function Leads() {
                     <td className="p-4 text-xen-dark-300">{lead.name || '-'}</td>
                     <td className="p-4 text-xen-dark-300">{lead.company || '-'}</td>
                     <td className="p-4">
-                      <span className={`px-2 py-1 rounded-lg text-xs font-medium ${statusColors[lead.status]?.bg} ${statusColors[lead.status]?.text}`}>
-                        {lead.status}
+                      <span className={`px-2 py-1 rounded-lg text-xs font-medium ${statusColors[lead.status]?.bg || 'bg-gray-500/20'} ${statusColors[lead.status]?.text || 'text-gray-400'}`}>
+                        {getStatusDisplayName(lead.status)}
                       </span>
                     </td>
                     <td className="p-4 text-xen-dark-400 text-sm">
@@ -371,6 +393,7 @@ export default function Leads() {
           
           <div className="p-4 border-t border-xen-dark-700/50 text-sm text-xen-dark-400">
             Showing {filteredLeads.length} of {leads.length} leads
+            {stats.total > leads.length && ` (${stats.total} total${selectedCampaign ? ' in this campaign' : ''})`}
           </div>
         </motion.div>
       )}

@@ -68,6 +68,19 @@ def send_email_task(
             logger.info(f"Lead {lead.email} is not contactable, skipping")
             return {"status": "skipped", "message": f"Lead status: {lead.status}"}
         
+        # CRITICAL: Check if this lead has already been contacted for this step
+        # This prevents duplicate sends if the same task is queued multiple times
+        if followup_step == 0:
+            # For initial email, check if lead has already received initial email
+            if lead.last_sent_at is not None and lead.step == 0:
+                logger.info(f"Lead {lead.email} already received initial email, skipping duplicate send")
+                return {"status": "skipped", "message": "Lead already contacted"}
+        else:
+            # For follow-ups, check if this specific step has already been sent
+            if lead.step >= followup_step:
+                logger.info(f"Lead {lead.email} already at step {lead.step}, skipping step {followup_step}")
+                return {"status": "skipped", "message": f"Step {followup_step} already sent"}
+        
         # Send email
         email_service = EmailService(db)
         
@@ -95,10 +108,24 @@ def send_email_task(
                     "lead_email": lead.email
                 }
             elif result.status.value == "rate_limited":
-                # Retry later
+                # Extract wait time from error message (format: "Wait {seconds} seconds")
+                wait_time = 60  # Default to 60 seconds
+                if "Wait" in result.error_message:
+                    try:
+                        # Extract number from "Wait 994 seconds" or similar
+                        import re
+                        match = re.search(r'Wait\s+(\d+)\s+seconds', result.error_message)
+                        if match:
+                            wait_time = int(match.group(1))
+                            # Cap at 1 hour (3600 seconds) to avoid extremely long retries
+                            wait_time = min(wait_time, 3600)
+                    except (ValueError, AttributeError):
+                        pass  # Use default if parsing fails
+                
+                # Retry with calculated wait time
                 raise self.retry(
                     exc=Exception(result.error_message),
-                    countdown=60  # Retry in 1 minute
+                    countdown=wait_time
                 )
             else:
                 return {
@@ -109,7 +136,20 @@ def send_email_task(
                 
         except Exception as e:
             logger.error(f"Email task error: {str(e)}")
-            raise self.retry(exc=e)
+            # Extract wait time from error message if it's a rate limit error
+            wait_time = 60  # Default to 60 seconds
+            error_str = str(e)
+            if "Wait" in error_str:
+                try:
+                    import re
+                    match = re.search(r'Wait\s+(\d+)\s+seconds', error_str)
+                    if match:
+                        wait_time = int(match.group(1))
+                        wait_time = min(wait_time, 3600)  # Cap at 1 hour
+                except (ValueError, AttributeError):
+                    pass
+            
+            raise self.retry(exc=e, countdown=wait_time)
 
 
 @celery_app.task(
@@ -135,13 +175,15 @@ def send_bulk_emails_task(
         if not campaign or campaign.status != CampaignStatus.ACTIVE:
             return {"status": "skipped", "message": "Campaign not active"}
         
-        # Get leads to contact
+        # Get leads to contact - only those that haven't been contacted yet
+        # (status is QUEUED or NEW, and no email has been sent yet)
         leads = db.query(Lead).filter(
             Lead.campaign_id == campaign_id,
-            Lead.status == LeadStatus.QUEUED,
+            Lead.status.in_([LeadStatus.QUEUED, LeadStatus.NEW]),
             Lead.replied == False,
             Lead.bounced == False,
-            Lead.unsubscribed == False
+            Lead.unsubscribed == False,
+            Lead.last_sent_at.is_(None)  # Only leads that haven't received initial email
         ).limit(limit).all()
         
         if not leads:
@@ -155,18 +197,13 @@ def send_bulk_emails_task(
         asyncio.set_event_loop(loop)
         
         for lead in leads:
-            # Get random delay for human-like sending
-            delay = loop.run_until_complete(
-                rate_limiter.get_random_delay(
-                    min_seconds=campaign.min_interval_seconds,
-                    max_seconds=campaign.max_interval_seconds
-                )
-            )
+            # Fixed 10-second delay between emails
+            delay_seconds = 10
             
-            # Queue with countdown
+            # Queue with countdown (10 seconds between each email)
             send_email_task.apply_async(
                 args=[lead.id, campaign_id, 0],
-                countdown=delay * queued  # Stagger the sends
+                countdown=delay_seconds * queued  # 10 seconds * position in queue
             )
             
             queued += 1

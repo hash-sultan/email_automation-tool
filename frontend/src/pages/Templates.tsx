@@ -231,11 +231,15 @@ export default function Templates() {
                   </div>
                   <div>
                     <h3 className="font-semibold text-white">{template.name}</h3>
-                    <p className="text-sm text-xen-dark-400">
-                      {template.template_type === 'followup' 
-                        ? `Follow-up #${template.followup_step}` 
-                        : 'Initial Email'}
-                    </p>
+                    <div className="mt-1">
+                      <Badge 
+                        variant={template.template_type === 'followup' ? 'info' : 'success'}
+                      >
+                        {template.template_type === 'followup' 
+                          ? 'Follow-up Template' 
+                          : 'Main Email Template'}
+                      </Badge>
+                    </div>
                   </div>
                 </div>
                 <Badge variant={template.is_active ? 'success' : 'warning'}>
@@ -349,7 +353,7 @@ export default function Templates() {
                       onChange={(e) => setFormData({ ...formData, template_type: e.target.value as 'initial' | 'followup' })}
                       className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
                     >
-                      <option value="initial">Initial Email</option>
+                      <option value="initial">Main Email</option>
                       <option value="followup">Follow-up</option>
                     </select>
                   </div>

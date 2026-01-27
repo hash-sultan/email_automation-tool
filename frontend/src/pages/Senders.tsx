@@ -28,6 +28,7 @@ interface SenderFormData {
   smtp_password: string
   use_tls: boolean
   daily_limit: number
+  warmup_enabled: boolean
   imap_host: string
   imap_port: number
   imap_username: string
@@ -43,7 +44,8 @@ const defaultFormData: SenderFormData = {
   smtp_username: '',
   smtp_password: '',
   use_tls: true,
-  daily_limit: 50,
+  daily_limit: 200,
+  warmup_enabled: false,
   imap_host: 'imap.gmail.com',
   imap_port: 993,
   imap_username: '',
@@ -92,7 +94,8 @@ export default function Senders() {
       smtp_username: sender.smtp_username || sender.email,
       smtp_password: '',
       use_tls: sender.use_tls ?? true,
-      daily_limit: sender.daily_limit,
+      daily_limit: sender.base_daily_limit || sender.daily_limit || 200,
+      warmup_enabled: sender.warmup_enabled ?? false,
       imap_host: sender.imap_host || '',
       imap_port: sender.imap_port || 993,
       imap_username: sender.email,
@@ -135,6 +138,7 @@ export default function Senders() {
         const updatePayload: any = {
           name: (formData.name || formData.email).trim(),
           base_daily_limit: formData.daily_limit,
+          warmup_enabled: formData.warmup_enabled,
           smtp_config: {
             host: formData.smtp_host.trim(),
             port: formData.smtp_port,
@@ -162,6 +166,7 @@ export default function Senders() {
           name: (formData.name || formData.email).trim(),
           provider_type: providerType,
           base_daily_limit: formData.daily_limit,
+          warmup_enabled: formData.warmup_enabled,
           smtp_config: {
             host: formData.smtp_host.trim(),
             port: formData.smtp_port,
@@ -244,6 +249,24 @@ export default function Senders() {
       })
       // Still refresh to get any status updates
       fetchSenders()
+    }
+  }
+
+  const handleSkipWarmup = async (id: number) => {
+    if (!confirm('Skip warmup and use full daily limit? Only do this for established email accounts.')) return
+
+    try {
+      await sendersApi.skipWarmup(id)
+      toast.success('Warmup skipped! Sender can now use full daily limit.', {
+        duration: 3000,
+      })
+      fetchSenders()
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : 'Failed to skip warmup'
+      setError(errorMessage)
+      toast.error(errorMessage, {
+        duration: 4000,
+      })
     }
   }
 
@@ -342,17 +365,14 @@ export default function Senders() {
               </div>
 
               {/* Stats */}
-              <div className="grid grid-cols-2 gap-3 mb-4">
+              <div className="mb-4">
                 <div className="p-3 rounded-lg bg-xen-dark-800/50">
                   <p className="text-xs text-xen-dark-500">Sent Today</p>
                   <p className="text-lg font-semibold text-white">
-                    {sender.emails_sent_today} / {sender.daily_limit}
+                    {sender.emails_sent_today} / {sender.current_daily_limit || sender.daily_limit || sender.base_daily_limit || 200}
                   </p>
-                </div>
-                <div className="p-3 rounded-lg bg-xen-dark-800/50">
-                  <p className="text-xs text-xen-dark-500">This Hour</p>
-                  <p className="text-lg font-semibold text-white">
-                    {sender.emails_sent_this_hour} / {sender.hourly_limit}
+                  <p className="text-xs text-xen-dark-500 mt-1">
+                    Daily Limit: {sender.base_daily_limit || 200} (Max: 500)
                   </p>
                 </div>
               </div>
@@ -360,11 +380,21 @@ export default function Senders() {
               {/* Warmup Status */}
               {sender.warmup_enabled && (
                 <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/30 mb-4">
-                  <div className="flex items-center gap-2">
-                    <Shield className="w-4 h-4 text-blue-400" />
-                    <span className="text-sm text-blue-400">
-                      Warmup Day {sender.warmup_day}
-                    </span>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Shield className="w-4 h-4 text-blue-400" />
+                      <span className="text-sm text-blue-400">
+                        Warmup Day {sender.warmup_day || 0}
+                      </span>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleSkipWarmup(sender.id)}
+                      className="text-xs text-blue-400 hover:text-blue-300"
+                    >
+                      Skip
+                    </Button>
                   </div>
                 </div>
               )}
@@ -480,17 +510,30 @@ export default function Senders() {
 
                   <div>
                     <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-                      Daily Limit
+                      Daily Limit (Max 500/day)
                     </label>
                     <input
                       type="number"
                       value={formData.daily_limit}
-                      onChange={(e) => setFormData({ ...formData, daily_limit: parseInt(e.target.value) })}
+                      onChange={(e) => setFormData({ ...formData, daily_limit: parseInt(e.target.value) || 200 })}
                       className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
-                      min={1}
+                      min={10}
                       max={500}
                     />
-                    <p className="text-xs text-xen-dark-500 mt-1">Max 500/day for safety</p>
+                    <p className="text-xs text-xen-dark-500 mt-1">Maximum 500 emails per day per sender</p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="warmup_enabled"
+                      checked={formData.warmup_enabled}
+                      onChange={(e) => setFormData({ ...formData, warmup_enabled: e.target.checked })}
+                      className="rounded border-xen-dark-700 bg-xen-dark-800 text-xen-red-500 focus:ring-xen-red-500"
+                    />
+                    <label htmlFor="warmup_enabled" className="text-sm text-xen-dark-300">
+                      Enable warmup (gradual sending increase for new accounts)
+                    </label>
                   </div>
                 </div>
 

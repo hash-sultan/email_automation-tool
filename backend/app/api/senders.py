@@ -46,6 +46,8 @@ def list_senders(
         # Map status to is_active for frontend compatibility
         # Frontend expects is_active boolean, backend has status enum
         response.is_active = s.status == SenderStatus.ACTIVE
+        # Add warmup_day alias for frontend compatibility
+        response.warmup_day = s.warmup_current_day
         responses.append(response)
     return responses
 
@@ -63,6 +65,8 @@ def get_sender(sender_id: int, db: Session = Depends(get_db)):
     response.is_verified = sender.connection_error is None and sender.last_connection_check is not None
     # Map status to is_active for frontend compatibility
     response.is_active = sender.status == SenderStatus.ACTIVE
+    # Add warmup_day alias for frontend compatibility
+    response.warmup_day = sender.warmup_current_day
     
     # Add stats
     response.stats = SenderStats(
@@ -164,6 +168,8 @@ def create_sender(sender_data: SenderCreate, db: Session = Depends(get_db)):
     
     response = SenderResponse.model_validate(sender)
     response.is_verified = sender.status == SenderStatus.ACTIVE and sender.connection_error is None
+    response.is_active = sender.status == SenderStatus.ACTIVE
+    response.warmup_day = sender.warmup_current_day
     return response
 
 
@@ -206,6 +212,7 @@ def update_sender(
     response = SenderResponse.model_validate(sender)
     response.is_verified = sender.connection_error is None and sender.last_connection_check is not None
     response.is_active = sender.status == SenderStatus.ACTIVE
+    response.warmup_day = sender.warmup_current_day
     return response
 
 

@@ -63,10 +63,8 @@ def process_followups_task(self, campaign_id: int = None, limit: int = 100):
             elif in_reply_to:
                 references = in_reply_to
             
-            # Get random delay
-            delay = loop.run_until_complete(
-                rate_limiter.get_random_delay()
-            )
+            # Fixed 10-second delay between follow-up emails
+            delay_seconds = 10
             
             # Queue follow-up send
             send_email_task.apply_async(
@@ -77,7 +75,7 @@ def process_followups_task(self, campaign_id: int = None, limit: int = 100):
                     in_reply_to,
                     references
                 ],
-                countdown=delay * queued
+                countdown=delay_seconds * queued  # 10 seconds * position in queue
             )
             
             queued += 1

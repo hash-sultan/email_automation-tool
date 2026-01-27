@@ -64,6 +64,34 @@ def list_leads(
     )
 
 
+@router.get("/stats")
+def get_lead_stats(
+    campaign_id: Optional[int] = Query(None, description="Filter by campaign ID"),
+    db: Session = Depends(get_db)
+):
+    """Get lead statistics."""
+    query = db.query(Lead)
+    
+    if campaign_id:
+        query = query.filter(Lead.campaign_id == campaign_id)
+    
+    total = query.count()
+    
+    # Count by status
+    stats = {
+        "total": total,
+        "new": query.filter(Lead.status == LeadStatus.NEW).count(),
+        "queued": query.filter(Lead.status == LeadStatus.QUEUED).count(),
+        "contacted": query.filter(Lead.status == LeadStatus.CONTACTED).count(),
+        "replied": query.filter(Lead.status == LeadStatus.REPLIED).count(),
+        "bounced": query.filter(Lead.status == LeadStatus.BOUNCED).count(),
+        "unsubscribed": query.filter(Lead.status == LeadStatus.UNSUBSCRIBED).count(),
+        "converted": query.filter(Lead.status == LeadStatus.CONVERTED).count(),
+    }
+    
+    return stats
+
+
 @router.get("/{lead_id}", response_model=LeadResponse)
 def get_lead(lead_id: int, db: Session = Depends(get_db)):
     """Get a specific lead."""
@@ -246,4 +274,3 @@ def mark_lead_unsubscribed(lead_id: int, db: Session = Depends(get_db)):
     db.commit()
     
     return {"status": "marked_unsubscribed", "lead_id": lead_id}
-

@@ -211,12 +211,14 @@ class FollowUpEngine:
         """
         Resume follow-ups for a paused campaign.
         Recalculates next follow-up times.
+        Only schedules follow-ups for leads that have already received their initial email.
         """
         campaign = self.db.query(Campaign).filter(Campaign.id == campaign_id).first()
         if not campaign:
             return 0
         
-        # Get leads that had follow-ups paused
+        # Get leads that had follow-ups paused AND have already received their initial email
+        # Only resume follow-ups for leads that have last_sent_at set (initial email was sent)
         leads = self.db.query(Lead).filter(
             and_(
                 Lead.campaign_id == campaign_id,
@@ -225,7 +227,8 @@ class FollowUpEngine:
                 Lead.unsubscribed == False,
                 Lead.step < campaign.max_followup_steps,
                 Lead.next_followup_at.is_(None),
-                Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED])
+                Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED]),
+                Lead.last_sent_at.isnot(None)  # Only leads that have received initial email
             )
         ).all()
         

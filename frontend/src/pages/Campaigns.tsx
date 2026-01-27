@@ -14,9 +14,11 @@ import {
   AlertCircle,
   CheckCircle,
   Clock,
+  Settings,
 } from 'lucide-react'
 import Button from '../components/Button'
 import Badge from '../components/Badge'
+import FollowUpTemplates from '../components/FollowUpTemplates'
 import { campaignsApi, sendersApi, templatesApi, type Campaign, type Sender, type Template } from '../api/client'
 
 interface CampaignFormData {
@@ -24,9 +26,15 @@ interface CampaignFormData {
   description: string
   sender_id: number | null
   template_id: number | null
+  followup_template_id: number | null
   followup_enabled: boolean
   followup_delay_days: number
   max_followups: number
+  daily_limit: number
+  hourly_limit: number
+  send_weekdays_only: boolean
+  send_window_start: string
+  send_window_end: string
 }
 
 const defaultFormData: CampaignFormData = {
@@ -34,9 +42,15 @@ const defaultFormData: CampaignFormData = {
   description: '',
   sender_id: null,
   template_id: null,
+  followup_template_id: null,
   followup_enabled: true,
   followup_delay_days: 3,
   max_followups: 3,
+  daily_limit: 200,  // 200/day = 1000 emails in 5 days
+  hourly_limit: 25,  // ~8-9 emails/hour for 200/day
+  send_weekdays_only: false,  // Allow weekends
+  send_window_start: '00:00',  // 24/7 sending
+  send_window_end: '23:59',  // 24/7 sending
 }
 
 const statusConfig: Record<string, { color: string; icon: typeof Play; label: string }> = {
@@ -58,6 +72,7 @@ export default function Campaigns() {
   const [formData, setFormData] = useState<CampaignFormData>(defaultFormData)
   const [submitting, setSubmitting] = useState(false)
   const [actionLoading, setActionLoading] = useState<number | null>(null)
+  const [showFollowUpModal, setShowFollowUpModal] = useState<{ campaignId: number; campaignName: string } | null>(null)
 
   const fetchData = async (showLoading = true) => {
     if (showLoading) {
@@ -108,12 +123,18 @@ export default function Campaigns() {
       await campaignsApi.create({
         name: formData.name,
         description: formData.description,
-        sender_id: formData.sender_id,
-        template_id: formData.template_id,
+        sender_id: formData.sender_id!,
+        template_id: formData.template_id!,
+        followup_template_ids: formData.followup_template_id ? [formData.followup_template_id] : undefined,
         followup_enabled: formData.followup_enabled,
         followup_delay_days: formData.followup_delay_days,
-        max_followups: formData.max_followups,
-      })
+        max_followup_steps: formData.max_followups,
+        daily_limit: formData.daily_limit,
+        hourly_limit: formData.hourly_limit,
+        send_weekdays_only: formData.send_weekdays_only,
+        send_window_start: formData.send_window_start,
+        send_window_end: formData.send_window_end,
+      } as any)
       setShowModal(false)
       setFormData(defaultFormData)
       setSuccess('Campaign created successfully!')
@@ -409,67 +430,78 @@ export default function Campaigns() {
                 )}
 
                 {/* Actions */}
-                <div className="flex items-center gap-2">
-                  {campaign.status === 'draft' && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    {campaign.status === 'draft' && (
+                      <Button
+                        size="sm"
+                        onClick={() => handleStart(campaign.id)}
+                        disabled={actionLoading === campaign.id || campaign.total_leads === 0}
+                        className="flex-1"
+                      >
+                        {actionLoading === campaign.id ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Play className="w-4 h-4 mr-1" />
+                            Start
+                          </>
+                        )}
+                      </Button>
+                    )}
+                    {campaign.status === 'active' && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handlePause(campaign.id)}
+                        disabled={actionLoading === campaign.id}
+                        className="flex-1"
+                      >
+                        {actionLoading === campaign.id ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Pause className="w-4 h-4 mr-1" />
+                            Pause
+                          </>
+                        )}
+                      </Button>
+                    )}
+                    {campaign.status === 'paused' && (
+                      <Button
+                        size="sm"
+                        onClick={() => handleResume(campaign.id)}
+                        disabled={actionLoading === campaign.id}
+                        className="flex-1"
+                      >
+                        {actionLoading === campaign.id ? (
+                          <RefreshCw className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <>
+                            <Play className="w-4 h-4 mr-1" />
+                            Resume
+                          </>
+                        )}
+                      </Button>
+                    )}
                     <Button
+                      variant="ghost"
                       size="sm"
-                      onClick={() => handleStart(campaign.id)}
-                      disabled={actionLoading === campaign.id || campaign.total_leads === 0}
-                      className="flex-1"
+                      onClick={() => handleDelete(campaign.id)}
+                      className="text-red-400 hover:text-red-300"
+                      disabled={campaign.status === 'active'}
                     >
-                      {actionLoading === campaign.id ? (
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <>
-                          <Play className="w-4 h-4 mr-1" />
-                          Start
-                        </>
-                      )}
+                      <Trash2 className="w-4 h-4" />
                     </Button>
-                  )}
-                  {campaign.status === 'active' && (
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => handlePause(campaign.id)}
-                      disabled={actionLoading === campaign.id}
-                      className="flex-1"
-                    >
-                      {actionLoading === campaign.id ? (
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <>
-                          <Pause className="w-4 h-4 mr-1" />
-                          Pause
-                        </>
-                      )}
-                    </Button>
-                  )}
-                  {campaign.status === 'paused' && (
-                    <Button
-                      size="sm"
-                      onClick={() => handleResume(campaign.id)}
-                      disabled={actionLoading === campaign.id}
-                      className="flex-1"
-                    >
-                      {actionLoading === campaign.id ? (
-                        <RefreshCw className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <>
-                          <Play className="w-4 h-4 mr-1" />
-                          Resume
-                        </>
-                      )}
-                    </Button>
-                  )}
+                  </div>
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => handleDelete(campaign.id)}
-                    className="text-red-400 hover:text-red-300"
-                    disabled={campaign.status === 'active'}
+                    onClick={() => setShowFollowUpModal({ campaignId: campaign.id, campaignName: campaign.name })}
+                    className="w-full text-xs"
                   >
-                    <Trash2 className="w-4 h-4" />
+                    <Settings className="w-3 h-3 mr-1" />
+                    Manage Follow-ups
                   </Button>
                 </div>
               </motion.div>
@@ -557,28 +589,156 @@ export default function Campaigns() {
                   )}
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-                    Email Template *
-                  </label>
-                  <select
-                    required
-                    value={formData.template_id || ''}
-                    onChange={(e) => setFormData({ ...formData, template_id: parseInt(e.target.value) })}
-                    className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
-                  >
-                    <option value="">Select a template...</option>
-                    {templates.map((t) => (
-                      <option key={t.id} value={t.id}>
-                        {t.name} - {t.subject.substring(0, 30)}...
-                      </option>
-                    ))}
-                  </select>
-                  {templates.length === 0 && (
-                    <p className="text-xs text-yellow-400 mt-1">
-                      <a href="/templates" className="underline">Create a template first</a>
+                {/* Email Templates Section */}
+                <div className="border-t border-xen-dark-700 pt-4">
+                  <h3 className="text-sm font-semibold text-white mb-4">Email Templates</h3>
+                  
+                  {/* Main Email Template */}
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                      Main Email Template *
+                    </label>
+                    <select
+                      required
+                      value={formData.template_id || ''}
+                      onChange={(e) => setFormData({ ...formData, template_id: parseInt(e.target.value) })}
+                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                    >
+                      <option value="">Select a main email template...</option>
+                      {templates
+                        .filter(t => t.template_type === 'initial' || !t.template_type)
+                        .map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} - {t.subject.substring(0, 30)}...
+                          </option>
+                        ))}
+                    </select>
+                    {templates.filter(t => t.template_type === 'initial' || !t.template_type).length === 0 && (
+                      <p className="text-xs text-yellow-400 mt-1">
+                        <a href="/templates" className="underline">Create a main email template first</a>
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Follow-up Template Selection */}
+                  <div>
+                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                      Follow-up Template (Optional)
+                    </label>
+                    <select
+                      value={formData.followup_template_id || ''}
+                      onChange={(e) => {
+                        setFormData({ ...formData, followup_template_id: e.target.value ? parseInt(e.target.value) : null })
+                      }}
+                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                    >
+                      <option value="">Select a follow-up template (optional)...</option>
+                      {templates
+                        .filter(t => t.template_type === 'followup')
+                        .map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.name} - {t.subject.substring(0, 30)}...
+                          </option>
+                        ))}
+                    </select>
+                    {templates.filter(t => t.template_type === 'followup').length === 0 && (
+                      <p className="text-xs text-yellow-400 mt-1">
+                        <a href="/templates" className="underline">Create a follow-up template first</a> (select "Follow-up" type when creating)
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Campaign Rate Limits */}
+                <div className="border-t border-xen-dark-700 pt-4">
+                  <h3 className="text-sm font-semibold text-white mb-3">Campaign Rate Limits</h3>
+                  <p className="text-xs text-xen-dark-400 mb-4">
+                    Configure sending limits for this campaign. Lower limits help with warmup for new email accounts.
+                  </p>
+                  
+                  <div className="grid grid-cols-2 gap-4 mb-4">
+                    <div>
+                      <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                        Daily Limit *
+                      </label>
+                      <input
+                        type="number"
+                        required
+                        min={1}
+                        max={500}
+                        value={formData.daily_limit}
+                        onChange={(e) => setFormData({ ...formData, daily_limit: parseInt(e.target.value) })}
+                        className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                      />
+                      <p className="text-xs text-xen-dark-500 mt-1">
+                        Default: 200/day = 1000 emails in 5 days
+                      </p>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                        Hourly Limit *
+                      </label>
+                      <input
+                        type="number"
+                        required
+                        min={1}
+                        max={100}
+                        value={formData.hourly_limit}
+                        onChange={(e) => setFormData({ ...formData, hourly_limit: parseInt(e.target.value) })}
+                        className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                      />
+                      <p className="text-xs text-xen-dark-500 mt-1">
+                        Recommended: 25/hour for 200/day
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Send Window */}
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                      Send Window (24/7 by default)
+                    </label>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-xen-dark-400 mb-1">Start Time</label>
+                        <input
+                          type="time"
+                          value={formData.send_window_start}
+                          onChange={(e) => setFormData({ ...formData, send_window_start: e.target.value })}
+                          className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-xen-dark-400 mb-1">End Time</label>
+                        <input
+                          type="time"
+                          value={formData.send_window_end}
+                          onChange={(e) => setFormData({ ...formData, send_window_end: e.target.value })}
+                          className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-xen-dark-500 mt-1">
+                      Default: 00:00 - 23:59 (24/7 sending)
                     </p>
-                  )}
+                  </div>
+
+                  {/* Weekdays Only */}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      id="send_weekdays_only"
+                      checked={formData.send_weekdays_only}
+                      onChange={(e) => setFormData({ ...formData, send_weekdays_only: e.target.checked })}
+                      className="rounded border-xen-dark-700 bg-xen-dark-800 text-xen-red-500 focus:ring-xen-red-500"
+                    />
+                    <label htmlFor="send_weekdays_only" className="text-sm font-medium text-xen-dark-300">
+                      Send only on weekdays (Monday-Friday)
+                    </label>
+                  </div>
+                  <p className="text-xs text-xen-dark-500 mt-1 ml-6">
+                    Unchecked = Send 24/7 including weekends
+                  </p>
                 </div>
 
                 {/* Follow-up Settings */}
@@ -666,6 +826,15 @@ export default function Campaigns() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Follow-up Templates Modal */}
+      {showFollowUpModal && (
+        <FollowUpTemplates
+          campaignId={showFollowUpModal.campaignId}
+          campaignName={showFollowUpModal.campaignName}
+          onClose={() => setShowFollowUpModal(null)}
+        />
+      )}
     </div>
   )
 }

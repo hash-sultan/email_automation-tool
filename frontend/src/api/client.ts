@@ -15,6 +15,8 @@ export interface Sender {
   is_active: boolean;
   is_verified: boolean;
   daily_limit: number;
+  base_daily_limit: number;
+  current_daily_limit: number;
   hourly_limit: number;
   emails_sent_today: number;
   emails_sent_this_hour: number;
@@ -51,6 +53,7 @@ export interface SenderCreate {
   name: string;
   provider_type?: 'gmail' | 'outlook' | 'custom_smtp';
   base_daily_limit?: number;
+  warmup_enabled?: boolean;
   smtp_config?: SMTPConfig;
   imap_config?: IMAPConfig;
 }
@@ -79,7 +82,7 @@ export interface Lead {
   title?: string;
   phone?: string;
   timezone?: string;
-  status: 'new' | 'contacted' | 'replied' | 'bounced' | 'unsubscribed' | 'converted';
+  status: 'new' | 'queued' | 'contacted' | 'replied' | 'bounced' | 'unsubscribed' | 'converted';
   campaign_id?: number;
   source?: string;
   custom_fields?: Record<string, string>;
@@ -104,6 +107,11 @@ export interface Campaign {
   followup_enabled: boolean;
   followup_delay_days: number;
   max_followups: number;
+  daily_limit: number;
+  hourly_limit: number;
+  send_weekdays_only: boolean;
+  send_window_start: string;
+  send_window_end: string;
   created_at: string;
   started_at?: string;
 }
@@ -197,6 +205,9 @@ export const sendersApi = {
   verify: (id: number) => apiFetch<{ status: string; sender_id: number; smtp_verified: boolean; error?: string }>(`/senders/${id}/verify`, {
     method: 'POST',
   }),
+  skipWarmup: (id: number) => apiFetch<{ status: string; sender_id: number }>(`/senders/${id}/skip-warmup`, {
+    method: 'POST',
+  }),
 };
 
 // Templates API
@@ -216,11 +227,81 @@ export const templatesApi = {
   }),
 };
 
+// Follow-up Template types
+export interface FollowUpTemplate {
+  id: number;
+  campaign_id: number;
+  step: number;
+  delay_days: number;
+  delay_hours: number;
+  subject: string;
+  body_html: string;
+  body_plain?: string;
+  reply_to_thread: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FollowUpTemplateCreate {
+  campaign_id: number;
+  step: number;
+  delay_days: number;
+  delay_hours: number;
+  subject: string;
+  body_html: string;
+  body_plain?: string;
+  reply_to_thread: boolean;
+  is_active: boolean;
+}
+
+export interface FollowUpTemplateUpdate {
+  delay_days?: number;
+  delay_hours?: number;
+  subject?: string;
+  body_html?: string;
+  body_plain?: string;
+  reply_to_thread?: boolean;
+  is_active?: boolean;
+}
+
+// Follow-up Templates API
+export const followupTemplatesApi = {
+  list: (campaignId: number) => apiFetch<FollowUpTemplate[]>(`/templates/followups/${campaignId}`),
+  create: (data: FollowUpTemplateCreate) => apiFetch<FollowUpTemplate>('/templates/followups', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  update: (id: number, data: FollowUpTemplateUpdate) => apiFetch<FollowUpTemplate>(`/templates/followups/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  }),
+  delete: (id: number) => apiFetch<void>(`/templates/followups/${id}`, {
+    method: 'DELETE',
+  }),
+};
+
 // Leads API
 export const leadsApi = {
-  list: (campaignId?: number) => {
+  list: (campaignId?: number, page: number = 1, pageSize: number = 1000) => {
+    const params = new URLSearchParams();
+    if (campaignId) params.append('campaign_id', campaignId.toString());
+    params.append('page', page.toString());
+    params.append('page_size', pageSize.toString());
+    return apiFetch<PaginatedList<Lead>>(`/leads?${params.toString()}`);
+  },
+  stats: (campaignId?: number) => {
     const params = campaignId ? `?campaign_id=${campaignId}` : '';
-    return apiFetch<PaginatedList<Lead>>(`/leads${params}`).then(res => res.items);
+    return apiFetch<{
+      total: number;
+      new: number;
+      queued: number;
+      contacted: number;
+      replied: number;
+      bounced: number;
+      unsubscribed: number;
+      converted: number;
+    }>(`/leads/stats${params}`);
   },
   get: (id: number) => apiFetch<Lead>(`/leads/${id}`),
   create: (data: Partial<Lead>) => apiFetch<Lead>('/leads/', {

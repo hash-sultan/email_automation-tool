@@ -18,6 +18,7 @@ class TemplateBase(BaseModel):
     signature_html: Optional[str] = None
     signature_plain: Optional[str] = None
     is_active: bool = True
+    template_type: str = Field(default="initial", pattern="^(initial|followup)$")
     
     @validator("body_html")
     def validate_body_html(cls, v):
@@ -50,6 +51,7 @@ class TemplateUpdate(BaseModel):
     signature_html: Optional[str] = None
     signature_plain: Optional[str] = None
     is_active: Optional[bool] = None
+    template_type: Optional[str] = Field(default=None, pattern="^(initial|followup)$")
 
 
 class TemplateResponse(TemplateBase):

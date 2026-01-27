@@ -44,7 +44,7 @@ class SenderBase(BaseModel):
     send_window_end_hour: int = Field(default=17, ge=0, le=23)
     send_weekdays_only: bool = True
     warmup_enabled: bool = True
-    base_daily_limit: int = Field(default=100, ge=10, le=200)
+    base_daily_limit: int = Field(default=200, ge=10, le=500)
     signature_html: Optional[str] = None
     signature_plain: Optional[str] = None
     
@@ -78,7 +78,7 @@ class SenderUpdate(BaseModel):
     send_window_end_hour: Optional[int] = Field(default=None, ge=0, le=23)
     send_weekdays_only: Optional[bool] = None
     warmup_enabled: Optional[bool] = None
-    base_daily_limit: Optional[int] = Field(default=None, ge=10, le=200)
+    base_daily_limit: Optional[int] = Field(default=None, ge=10, le=500)
     signature_html: Optional[str] = None
     signature_plain: Optional[str] = None
     smtp_config: Optional[SMTPConfig] = None
@@ -105,6 +105,7 @@ class SenderResponse(SenderBase):
     status: str
     warmup_start_date: Optional[date]
     warmup_current_day: int
+    warmup_day: Optional[int] = None  # Alias for warmup_current_day (frontend compatibility)
     current_daily_limit: int
     emails_sent_today: int
     total_emails_sent: int
