@@ -45,11 +45,19 @@ class Campaign(Base):
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     
-    # Sender association
+    # Sender association (single-sender mode, backward compatible)
     sender_id = Column(Integer, ForeignKey("senders.id"), nullable=False, index=True)
+
+    # Multi-sender rotation settings
+    sender_rotation_enabled = Column(Boolean, default=False, nullable=False)
+    max_senders = Column(Integer, nullable=True)
     
-    # Initial template
+    # Initial template (single-template mode)
     template_id = Column(Integer, ForeignKey("templates.id"), nullable=True)
+
+    # Template category (multi-template rotation mode)
+    # When set, all active templates in this category are eligible for sending.
+    template_category = Column(String(100), nullable=True, index=True)
     
     # Status
     status = Column(
@@ -66,7 +74,7 @@ class Campaign(Base):
     send_weekdays_only = Column(Boolean, default=False, nullable=False)  # Allow weekends
     
     # Rate limits (per campaign, within global limits)
-    daily_limit = Column(Integer, default=200, nullable=False)  # 200/day = 1000 in 5 days
+    daily_limit = Column(Integer, default=500, nullable=False)  # Default 500/day, max 1000/day
     hourly_limit = Column(Integer, default=50, nullable=False)  # 50/hour allows 200/day in 4 hours
     min_interval_seconds = Column(Integer, default=10, nullable=False)  # 10 seconds
     max_interval_seconds = Column(Integer, default=10, nullable=False)  # 10 seconds
@@ -84,6 +92,7 @@ class Campaign(Base):
     # Tracking stats
     total_leads = Column(Integer, default=0, nullable=False)
     emails_sent = Column(Integer, default=0, nullable=False)
+    followups_sent = Column(Integer, default=0, nullable=False)  # Count of follow-up emails sent
     emails_today = Column(Integer, default=0, nullable=False)
     emails_this_hour = Column(Integer, default=0, nullable=False)
     last_sent_at = Column(DateTime(timezone=True), nullable=True)
@@ -102,6 +111,13 @@ class Campaign(Base):
     
     # Relationships
     sender = relationship("Sender", back_populates="campaigns")
+    # When rotation is enabled, use this association instead of sender_id
+    campaign_senders = relationship(
+        "CampaignSender",
+        back_populates="campaign",
+        cascade="all, delete-orphan",
+        order_by="CampaignSender.position",
+    )
     leads = relationship("Lead", back_populates="campaign", cascade="all, delete-orphan")
     template = relationship("Template", back_populates="campaigns")
     followup_templates = relationship(
@@ -141,13 +157,9 @@ class Campaign(Base):
     @property
     def can_send_now(self) -> tuple:
         """Check if we can send right now (rate limits)"""
-        # Check daily limit
+        # Check daily limit only (hourly limit removed per user request)
         if self.emails_today >= self.daily_limit:
             return False, "Daily limit reached"
-        
-        # Check hourly limit
-        if self.emails_this_hour >= self.hourly_limit:
-            return False, "Hourly limit reached"
         
         return True, "OK"
     
@@ -155,7 +167,8 @@ class Campaign(Base):
         """Increment sent counters"""
         self.emails_sent += 1
         self.emails_today += 1
-        self.emails_this_hour += 1
+        # Hourly counter removed per user request
+        # self.emails_this_hour += 1
         self.last_sent_at = datetime.utcnow()
     
     def reset_daily_counters(self) -> None:

@@ -311,9 +311,13 @@ class ReplyDetector:
                     )
                 return None
             
-            # Get email body to check for unsubscribe
+            # Get email body to check for unsubscribe and error messages
+            # Try to get both HTML and plain text versions
             status, body_data = await imap.fetch(msg_id, '(BODY[TEXT])')
             body_text = ""
+            body_html_text = ""
+            
+            # Get plain text body
             if status == 'OK' and body_data[1]:
                 body_bytes = body_data[1]
                 if isinstance(body_bytes, tuple):
@@ -322,6 +326,75 @@ class ReplyDetector:
                     body_text = body_bytes.decode('utf-8', errors='ignore')
                 except:
                     body_text = str(body_bytes)
+            
+            # Try to get HTML body (for better reply extraction)
+            try:
+                html_status, html_data = await imap.fetch(msg_id, '(BODY[1])')
+                if html_status == 'OK' and html_data[1]:
+                    html_bytes = html_data[1]
+                    if isinstance(html_bytes, tuple):
+                        html_bytes = html_bytes[1]
+                    try:
+                        body_html_text = html_bytes.decode('utf-8', errors='ignore')
+                    except:
+                        pass
+            except:
+                pass
+            
+            # Extract just the reply portion (remove quoted original message)
+            # Common patterns: "On ... wrote:", "-----Original Message-----", etc.
+            if body_text:
+                # Split on common reply separators
+                reply_separators = [
+                    '\nOn ',  # "On [date] [name] wrote:"
+                    '\n-----Original Message-----',
+                    '\nFrom: ',
+                    '\n> ',
+                    '\n________________________________',
+                    '\n---',
+                ]
+                
+                # Find the first separator and take everything before it
+                reply_text = body_text
+                for separator in reply_separators:
+                    if separator in body_text:
+                        parts = body_text.split(separator, 1)
+                        if len(parts) > 0:
+                            reply_text = parts[0].strip()
+                            break
+                
+                # If we couldn't find a separator, use the full text but limit length
+                # (very long emails are likely mostly quoted text)
+                if reply_text == body_text and len(body_text) > 2000:
+                    # Take first 1000 chars as likely reply
+                    reply_text = body_text[:1000].strip()
+                
+                body_text = reply_text
+            
+            # Check if this is an error message (bounce, "address not found", etc.) - NOT a real reply
+            body_lower = body_text.lower()
+            subject_lower = subject.lower()
+            error_keywords = [
+                'address not found', 'message blocked', 'user not found',
+                'mailbox not found', 'no such user', 'invalid recipient',
+                'recipient address rejected', 'delivery failure', 'undeliverable',
+                'mail delivery failed', 'returned mail', 'bounce', '550', '5.1.1', '5.4.1',
+                'message could not be delivered', 'delivery status notification'
+            ]
+            
+            # Check subject and body for error indicators
+            is_error_message = any(keyword in subject_lower or keyword in body_lower for keyword in error_keywords)
+            
+            if is_error_message:
+                logger.debug(
+                    f"Skipping error message as reply: {from_email} - {subject[:50]}",
+                    extra={
+                        "from": from_email,
+                        "subject": subject[:50],
+                        "email_log_id": email_log.id if email_log else None
+                    }
+                )
+                return None  # Don't treat error messages as replies
             
             # Check for unsubscribe intent
             is_unsubscribe = self._check_unsubscribe_intent(subject + " " + body_text)
@@ -335,7 +408,9 @@ class ReplyDetector:
                 "lead_id": email_log.lead_id,
                 "campaign_id": email_log.campaign_id,
                 "is_unsubscribe": is_unsubscribe,
-                "received_at": date_str
+                "received_at": date_str,
+                "body_text": body_text,  # This is now the extracted reply text only
+                "body_html": body_html_text,  # Store HTML version too
             }
             
         except Exception as e:
@@ -352,6 +427,8 @@ class ReplyDetector:
         email_log_id = reply.get('email_log_id')
         reply_message_id = reply.get('reply_message_id')
         is_unsubscribe = reply.get('is_unsubscribe', False)
+        body_text = reply.get('body_text', '')
+        body_html = reply.get('body_html', '')
         
         # Get email_log
         email_log = None
@@ -363,9 +440,29 @@ class ReplyDetector:
         is_new_reply = email_log is None or email_log.replied_at is None
         
         # Mark email_log as replied (if not already replied)
-        # This stops follow-ups
+        # This stops follow-ups and stores the reply body for UI
         if email_log and is_new_reply:
             email_log.mark_replied()
+            
+            # Store the REPLY body (not the original email we sent)
+            # We store the reply in body_plain, and keep the original email in body_html
+            # This way we can show the reply text in the UI
+            if body_text and body_text.strip():
+                # Store the extracted reply text (without quoted original)
+                email_log.body_plain = body_text.strip()
+            elif body_html and body_html.strip():
+                # Fallback: if no plain text, extract from HTML
+                import re
+                import html
+                plain_from_html = html.unescape(re.sub(r'<[^>]+>', '', body_html))
+                if plain_from_html.strip():
+                    email_log.body_plain = plain_from_html.strip()
+            
+            # Store HTML version of reply if available (for rich formatting)
+            # Note: This overwrites the original email HTML, but that's OK since
+            # we want to show the reply in the UI, not what we sent
+            if body_html and body_html.strip():
+                email_log.body_html = body_html.strip()
         
         # Update lead (only if not already replied)
         if lead_id:

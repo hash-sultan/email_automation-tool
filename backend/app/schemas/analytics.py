@@ -82,11 +82,13 @@ class DashboardStats(BaseModel):
     
     # Today's stats
     emails_sent_today: int
+    followups_sent_today: int = 0
     replies_today: int
     bounces_today: int
     
     # Overall metrics
     total_emails_sent: int
+    total_followups_sent: int = 0
     total_replies: int
     overall_reply_rate: float
     overall_bounce_rate: float
@@ -104,6 +106,7 @@ class DashboardStats(BaseModel):
     # Charts data
     sends_last_7_days: List[TimeSeriesData]
     replies_last_7_days: List[TimeSeriesData]
+    emails_by_day: List[Dict[str, Any]]  # Combined daily data: {date, sent, replies, bounces}
     
     # Safety status
     is_safe_to_send: bool
