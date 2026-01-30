@@ -1,37 +1,38 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Send,
   Plus,
-  Trash2,
-  Play,
-  Pause,
   RefreshCw,
   AlertTriangle,
   X,
+  Play,
+  Pause,
   Mail,
   MessageSquare,
-  AlertCircle,
   CheckCircle,
-  Clock,
-  Settings,
+  AlertCircle,
 } from 'lucide-react'
 import Button from '../components/Button'
-import Badge from '../components/Badge'
-import FollowUpTemplates from '../components/FollowUpTemplates'
-import { campaignsApi, sendersApi, templatesApi, type Campaign, type Sender, type Template } from '../api/client'
+import CampaignCard from '../components/CampaignCard'
+import { SkeletonCard } from '../components/SkeletonLoader'
+import { campaignsApi, type Campaign } from '../api/client'
+import { useCampaignStore } from '../stores/campaignStore'
+import { useSenderStore } from '../stores/senderStore'
+import { useTemplateStore } from '../stores/templateStore'
+import toast from 'react-hot-toast'
 
 interface CampaignFormData {
   name: string
   description: string
   sender_id: number | null
-  template_id: number | null
-  followup_template_id: number | null
+  sender_rotation_enabled: boolean
+  sender_ids: number[]
+  max_senders?: number | null
+  template_category: string
   followup_enabled: boolean
   followup_delay_days: number
   max_followups: number
-  daily_limit: number
-  hourly_limit: number
   send_weekdays_only: boolean
   send_window_start: string
   send_window_end: string
@@ -41,58 +42,82 @@ const defaultFormData: CampaignFormData = {
   name: '',
   description: '',
   sender_id: null,
-  template_id: null,
-  followup_template_id: null,
+  sender_rotation_enabled: false,
+  sender_ids: [],
+  max_senders: undefined,
+  template_category: '',
   followup_enabled: true,
   followup_delay_days: 3,
-  max_followups: 3,
-  daily_limit: 200,  // 200/day = 1000 emails in 5 days
-  hourly_limit: 25,  // ~8-9 emails/hour for 200/day
+  max_followups: 1,
   send_weekdays_only: false,  // Allow weekends
   send_window_start: '00:00',  // 24/7 sending
   send_window_end: '23:59',  // 24/7 sending
 }
 
-const statusConfig: Record<string, { color: string; icon: typeof Play; label: string }> = {
-  draft: { color: 'gray', icon: Clock, label: 'Draft' },
-  active: { color: 'green', icon: Play, label: 'Active' },
-  paused: { color: 'yellow', icon: Pause, label: 'Paused' },
-  completed: { color: 'blue', icon: CheckCircle, label: 'Completed' },
-  cancelled: { color: 'red', icon: X, label: 'Cancelled' },
-}
 
 export default function Campaigns() {
-  const [campaigns, setCampaigns] = useState<Campaign[]>([])
-  const [senders, setSenders] = useState<Sender[]>([])
-  const [templates, setTemplates] = useState<Template[]>([])
-  const [loading, setLoading] = useState(true)
+  // Zustand stores
+  const { 
+    campaigns, 
+    loading: campaignsLoading, 
+    error: campaignsError,
+    fetchCampaigns,
+    optimisticPause,
+    optimisticResume,
+    optimisticStart,
+    addCampaign,
+    removeCampaign,
+  } = useCampaignStore()
+  
+  const { 
+    senders, 
+    loading: sendersLoading,
+    fetchSenders 
+  } = useSenderStore()
+  
+  const { 
+    templates, 
+    loading: templatesLoading,
+    fetchTemplates 
+  } = useTemplateStore()
+  
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [showModal, setShowModal] = useState(false)
+  const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null)
   const [formData, setFormData] = useState<CampaignFormData>(defaultFormData)
   const [submitting, setSubmitting] = useState(false)
   const [actionLoading, setActionLoading] = useState<number | null>(null)
-  const [showFollowUpModal, setShowFollowUpModal] = useState<{ campaignId: number; campaignName: string } | null>(null)
+
+  // Derive available template categories from templates
+  const templateCategories = useMemo(
+    () => Array.from(new Set(templates.map(t => t.category))).sort(),
+    [templates]
+  )
+  
+  const loading = campaignsLoading || sendersLoading || templatesLoading
+  const displayError = campaignsError || error
 
   const fetchData = async (showLoading = true) => {
     if (showLoading) {
-      setLoading(true)
+      useCampaignStore.getState().setLoading(true)
+      useSenderStore.getState().setLoading(true)
+      useTemplateStore.getState().setLoading(true)
     }
     setError(null)
     try {
-      const [campaignsData, sendersData, templatesData] = await Promise.all([
-        campaignsApi.list(),
-        sendersApi.list(),
-        templatesApi.list(),
+      await Promise.all([
+        fetchCampaigns(),
+        fetchSenders(),
+        fetchTemplates(),
       ])
-      setCampaigns(campaignsData)
-      setSenders(sendersData)
-      setTemplates(templatesData)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load data')
     } finally {
       if (showLoading) {
-        setLoading(false)
+        useCampaignStore.getState().setLoading(false)
+        useSenderStore.getState().setLoading(false)
+        useTemplateStore.getState().setLoading(false)
       }
     }
   }
@@ -103,16 +128,52 @@ export default function Campaigns() {
     // Auto-refresh campaign data every 30 seconds to show updated reply counts
     // Don't show loading spinner for auto-refresh to avoid UI flicker
     const interval = setInterval(() => {
-      fetchData(false)
+      fetchCampaigns() // Only refresh campaigns for updated stats
     }, 30000) // Refresh every 30 seconds
     
     return () => clearInterval(interval)
   }, [])
 
+  const openEditModal = (campaign: Campaign) => {
+    setEditingCampaign(campaign)
+    setFormData({
+      name: campaign.name,
+      description: campaign.description || '',
+      sender_id: campaign.sender_rotation_enabled ? null : campaign.sender_id,
+      sender_rotation_enabled: campaign.sender_rotation_enabled,
+      sender_ids: campaign.sender_ids || [],
+      max_senders: campaign.max_senders || undefined,
+      template_category: campaign.template_category || '',
+      followup_enabled: campaign.followup_enabled,
+      followup_delay_days: campaign.followup_delay_days,
+      max_followups: campaign.max_followups,
+      send_weekdays_only: campaign.send_weekdays_only,
+      send_window_start: campaign.send_window_start,
+      send_window_end: campaign.send_window_end,
+    })
+    setShowModal(true)
+    setError(null)
+  }
+
+  const openAddModal = () => {
+    setEditingCampaign(null)
+    setFormData(defaultFormData)
+    setShowModal(true)
+    setError(null)
+  }
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if (!formData.sender_id || !formData.template_id) {
-      setError('Please select a sender and template')
+    if (!formData.template_category) {
+      setError('Please select a template category')
+      return
+    }
+    if (!formData.sender_rotation_enabled && !formData.sender_id) {
+      setError('Please select a sender')
+      return
+    }
+    if (formData.sender_rotation_enabled && formData.sender_ids.length === 0) {
+      setError('Please select at least one sender for rotation')
       return
     }
 
@@ -120,28 +181,61 @@ export default function Campaigns() {
     setError(null)
 
     try {
-      await campaignsApi.create({
-        name: formData.name,
-        description: formData.description,
-        sender_id: formData.sender_id!,
-        template_id: formData.template_id!,
-        followup_template_ids: formData.followup_template_id ? [formData.followup_template_id] : undefined,
-        followup_enabled: formData.followup_enabled,
-        followup_delay_days: formData.followup_delay_days,
-        max_followup_steps: formData.max_followups,
-        daily_limit: formData.daily_limit,
-        hourly_limit: formData.hourly_limit,
-        send_weekdays_only: formData.send_weekdays_only,
-        send_window_start: formData.send_window_start,
-        send_window_end: formData.send_window_end,
-      } as any)
-      setShowModal(false)
-      setFormData(defaultFormData)
-      setSuccess('Campaign created successfully!')
-      fetchData()
-      setTimeout(() => setSuccess(null), 3000)
+      if (editingCampaign) {
+        // Update existing campaign
+        const primarySenderId = formData.sender_rotation_enabled
+          ? formData.sender_ids[0]
+          : formData.sender_id!
+
+        await campaignsApi.update(editingCampaign.id, {
+          name: formData.name,
+          description: formData.description,
+          sender_id: primarySenderId,
+          sender_rotation_enabled: formData.sender_rotation_enabled,
+          sender_ids: formData.sender_rotation_enabled ? formData.sender_ids : undefined,
+          max_senders: formData.sender_rotation_enabled ? formData.max_senders : undefined,
+          template_category: formData.template_category,
+          followup_enabled: formData.followup_enabled,
+          followup_delay_days: formData.followup_delay_days,
+          max_followup_steps: formData.max_followups,
+          send_weekdays_only: formData.send_weekdays_only,
+          send_window_start: formData.send_window_start,
+          send_window_end: formData.send_window_end,
+        } as any)
+        
+        setShowModal(false)
+        setFormData(defaultFormData)
+        setEditingCampaign(null)
+        await fetchData(false) // Refresh campaigns
+        toast.success('Campaign updated successfully!')
+      } else {
+        // Create new campaign
+        const primarySenderId = formData.sender_rotation_enabled
+          ? formData.sender_ids[0]
+          : formData.sender_id!
+
+        const result = await campaignsApi.create({
+          name: formData.name,
+          description: formData.description,
+          sender_id: primarySenderId,
+          sender_rotation_enabled: formData.sender_rotation_enabled,
+          sender_ids: formData.sender_rotation_enabled ? formData.sender_ids : undefined,
+          max_senders: formData.sender_rotation_enabled ? formData.max_senders : undefined,
+          template_category: formData.template_category,
+          followup_enabled: formData.followup_enabled,
+          followup_delay_days: formData.followup_delay_days,
+          max_followup_steps: formData.max_followups,
+          send_weekdays_only: formData.send_weekdays_only,
+          send_window_start: formData.send_window_start,
+          send_window_end: formData.send_window_end,
+        } as any)
+        setShowModal(false)
+        setFormData(defaultFormData)
+        addCampaign(result)
+        toast.success('Campaign created successfully!')
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create campaign')
+      setError(err instanceof Error ? err.message : `Failed to ${editingCampaign ? 'update' : 'create'} campaign`)
     } finally {
       setSubmitting(false)
     }
@@ -150,12 +244,10 @@ export default function Campaigns() {
   const handleStart = async (id: number) => {
     setActionLoading(id)
     try {
-      await campaignsApi.start(id)
-      setSuccess('Campaign started!')
-      fetchData()
-      setTimeout(() => setSuccess(null), 3000)
+      await optimisticStart(id)
+      toast.success('Campaign started!')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start campaign')
+      // Error already handled in store
     } finally {
       setActionLoading(null)
     }
@@ -164,12 +256,10 @@ export default function Campaigns() {
   const handlePause = async (id: number) => {
     setActionLoading(id)
     try {
-      await campaignsApi.pause(id)
-      setSuccess('Campaign paused')
-      fetchData()
-      setTimeout(() => setSuccess(null), 3000)
+      await optimisticPause(id)
+      toast.success('Campaign paused')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to pause campaign')
+      // Error already handled in store
     } finally {
       setActionLoading(null)
     }
@@ -178,12 +268,10 @@ export default function Campaigns() {
   const handleResume = async (id: number) => {
     setActionLoading(id)
     try {
-      await campaignsApi.resume(id)
-      setSuccess('Campaign resumed!')
-      fetchData()
-      setTimeout(() => setSuccess(null), 3000)
+      await optimisticResume(id)
+      toast.success('Campaign resumed!')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resume campaign')
+      // Error already handled in store
     } finally {
       setActionLoading(null)
     }
@@ -194,11 +282,28 @@ export default function Campaigns() {
 
     try {
       await campaignsApi.delete(id)
-      setSuccess('Campaign deleted')
-      fetchData()
-      setTimeout(() => setSuccess(null), 3000)
+      removeCampaign(id)
+      toast.success('Campaign deleted')
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to delete campaign')
+      const errorMsg = err instanceof Error ? err.message : 'Failed to delete campaign'
+      setError(errorMsg)
+      toast.error(errorMsg)
+    }
+  }
+
+  const handleTriggerFollowups = async (campaignId: number) => {
+    setActionLoading(campaignId)
+    try {
+      const result = await campaignsApi.triggerFollowups(campaignId)
+      toast.success(result.message || `Follow-ups triggered for campaign`)
+      // Refresh campaigns to update follow-ups count
+      await fetchData(false)
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to trigger follow-ups'
+      setError(errorMsg)
+      toast.error(errorMsg)
+    } finally {
+      setActionLoading(null)
     }
   }
 
@@ -219,7 +324,7 @@ export default function Campaigns() {
           <motion.h1
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-2xl font-bold text-white"
+            className="text-3xl font-semibold text-gray-900"
           >
             Campaigns
           </motion.h1>
@@ -227,17 +332,17 @@ export default function Campaigns() {
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
-            className="text-xen-dark-400 mt-1"
+            className="text-gray-500 mt-1"
           >
             Create and manage your email campaigns
           </motion.p>
         </div>
 
         <div className="flex items-center gap-3">
-          <Button variant="ghost" onClick={fetchData} disabled={loading}>
+          <Button variant="ghost" onClick={() => fetchData()} disabled={loading}>
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </Button>
-          <Button onClick={() => setShowModal(true)}>
+          <Button onClick={openAddModal}>
             <Plus className="w-4 h-4 mr-2" />
             New Campaign
           </Button>
@@ -251,32 +356,32 @@ export default function Campaigns() {
         className="grid grid-cols-5 gap-4"
       >
         {[
-          { label: 'Total Campaigns', value: stats.total, icon: Send, color: 'text-white' },
-          { label: 'Active', value: stats.active, icon: Play, color: 'text-green-400' },
-          { label: 'Paused', value: stats.paused, icon: Pause, color: 'text-yellow-400' },
-          { label: 'Emails Sent', value: stats.totalSent, icon: Mail, color: 'text-blue-400' },
-          { label: 'Replies', value: stats.totalReplies, icon: MessageSquare, color: 'text-purple-400' },
+          { label: 'Total Campaigns', value: stats.total, icon: Send, color: 'text-enterprise-red' },
+          { label: 'Active', value: stats.active, icon: Play, color: 'text-green-600' },
+          { label: 'Paused', value: stats.paused, icon: Pause, color: 'text-yellow-600' },
+          { label: 'Emails Sent', value: stats.totalSent, icon: Mail, color: 'text-enterprise-red' },
+          { label: 'Replies', value: stats.totalReplies, icon: MessageSquare, color: 'text-purple-600' },
         ].map((stat) => (
-          <div key={stat.label} className="glass rounded-xl p-4 border border-xen-dark-700/50">
+          <div key={stat.label} className="card p-4">
             <div className="flex items-center gap-2 mb-1">
               <stat.icon className={`w-4 h-4 ${stat.color}`} />
-              <p className="text-xs text-xen-dark-500">{stat.label}</p>
+              <p className="text-xs text-gray-500">{stat.label}</p>
             </div>
-            <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
+            <p className={`text-2xl font-semibold ${stat.color}`}>{stat.value}</p>
           </div>
         ))}
       </motion.div>
 
       {/* Messages */}
-      {error && (
+      {displayError && (
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
           className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center gap-3"
         >
           <AlertTriangle className="w-5 h-5 text-red-400" />
-          <p className="text-red-400">{error}</p>
-          <button onClick={() => setError(null)} className="ml-auto">
+          <p className="text-red-400">{displayError}</p>
+          <button onClick={() => { setError(null); useCampaignStore.getState().setError(null) }} className="ml-auto">
             <X className="w-4 h-4 text-red-400" />
           </button>
         </motion.div>
@@ -297,7 +402,7 @@ export default function Campaigns() {
       )}
 
       {/* Pre-requisites Warning */}
-      {(senders.length === 0 || templates.length === 0) && (
+      {(senders.length === 0 || templateCategories.length === 0) && (
         <motion.div
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
@@ -311,8 +416,8 @@ export default function Campaigns() {
                 {senders.length === 0 && (
                   <li>• <a href="/senders" className="underline">Add a sender</a> (email account)</li>
                 )}
-                {templates.length === 0 && (
-                  <li>• <a href="/templates" className="underline">Create a template</a> (email content)</li>
+                {templateCategories.length === 0 && (
+                  <li>• <a href="/templates" className="underline">Create a template category & templates</a></li>
                 )}
               </ul>
             </div>
@@ -322,23 +427,25 @@ export default function Campaigns() {
 
       {/* Campaigns Grid */}
       {loading && campaigns.length === 0 ? (
-        <div className="flex items-center justify-center h-64">
-          <RefreshCw className="w-8 h-8 text-xen-red-400 animate-spin" />
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {[1, 2, 3].map((i) => (
+            <SkeletonCard key={i} />
+          ))}
         </div>
       ) : campaigns.length === 0 ? (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass rounded-2xl p-12 border border-xen-dark-700/50 text-center"
+          className="card p-12 text-center"
         >
-          <Send className="w-16 h-16 mx-auto text-xen-dark-600 mb-4" />
-          <h3 className="text-xl font-semibold text-white mb-2">No campaigns yet</h3>
-          <p className="text-xen-dark-400 mb-6">
+          <Send className="w-16 h-16 mx-auto text-gray-400 mb-4" />
+          <h3 className="text-xl font-semibold text-gray-900 mb-2">No campaigns yet</h3>
+          <p className="text-gray-500 mb-6">
             Create your first campaign to start sending emails
           </p>
           <Button 
             onClick={() => setShowModal(true)}
-            disabled={senders.length === 0 || templates.length === 0}
+            disabled={senders.length === 0 || templateCategories.length === 0}
           >
             <Plus className="w-4 h-4 mr-2" />
             Create First Campaign
@@ -346,167 +453,20 @@ export default function Campaigns() {
         </motion.div>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {campaigns.map((campaign, index) => {
-            const status = statusConfig[campaign.status] || statusConfig.draft
-            const replyRate = campaign.emails_sent > 0 
-              ? ((campaign.replies_count / campaign.emails_sent) * 100).toFixed(1)
-              : '0.0'
-
-            return (
-              <motion.div
-                key={campaign.id}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: index * 0.05 }}
-                className="glass rounded-2xl p-6 border border-xen-dark-700/50 hover:border-xen-dark-600/50 transition-colors"
-              >
-                {/* Header */}
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <div className={`w-12 h-12 rounded-xl flex items-center justify-center ${
-                      campaign.status === 'active' ? 'bg-green-500/20' : 'bg-xen-red-500/20'
-                    }`}>
-                      <Send className={`w-6 h-6 ${
-                        campaign.status === 'active' ? 'text-green-400' : 'text-xen-red-400'
-                      }`} />
-                    </div>
-                    <div>
-                      <h3 className="font-semibold text-white">{campaign.name}</h3>
-                      <p className="text-xs text-xen-dark-400">
-                        Created {new Date(campaign.created_at).toLocaleDateString()}
-                      </p>
-                    </div>
-                  </div>
-                  <Badge 
-                    variant={
-                      campaign.status === 'active' ? 'success' : 
-                      campaign.status === 'paused' ? 'warning' : 
-                      campaign.status === 'completed' ? 'info' : 'default'
-                    }
-                    pulse={campaign.status === 'active'}
-                  >
-                    {status.label}
-                  </Badge>
-                </div>
-
-                {/* Stats Grid */}
-                <div className="grid grid-cols-3 gap-2 mb-4">
-                  <div className="p-2 rounded-lg bg-xen-dark-800/50 text-center">
-                    <p className="text-lg font-bold text-white">{campaign.total_leads}</p>
-                    <p className="text-xs text-xen-dark-500">Leads</p>
-                  </div>
-                  <div className="p-2 rounded-lg bg-xen-dark-800/50 text-center">
-                    <p className="text-lg font-bold text-blue-400">{campaign.emails_sent}</p>
-                    <p className="text-xs text-xen-dark-500">Sent</p>
-                  </div>
-                  <div className="p-2 rounded-lg bg-xen-dark-800/50 text-center">
-                    <p className="text-lg font-bold text-green-400">{campaign.replies_count}</p>
-                    <p className="text-xs text-xen-dark-500">Replies</p>
-                  </div>
-                </div>
-
-                {/* Progress Bar */}
-                <div className="mb-4">
-                  <div className="flex items-center justify-between text-xs mb-1">
-                    <span className="text-xen-dark-400">Reply Rate</span>
-                    <span className="text-green-400">{replyRate}%</span>
-                  </div>
-                  <div className="h-2 bg-xen-dark-800 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-gradient-to-r from-green-500 to-green-400 rounded-full transition-all"
-                      style={{ width: `${Math.min(parseFloat(replyRate), 100)}%` }}
-                    />
-                  </div>
-                </div>
-
-              {/* Bounce indicator */}
-              {campaign.bounces_count > 0 && (
-                  <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/30 mb-4">
-                    <div className="flex items-center gap-2 text-sm text-red-400">
-                      <AlertCircle className="w-4 h-4" />
-                    <span>{campaign.bounces_count} bounces</span>
-                    </div>
-                  </div>
-                )}
-
-                {/* Actions */}
-                <div className="space-y-2">
-                  <div className="flex items-center gap-2">
-                    {campaign.status === 'draft' && (
-                      <Button
-                        size="sm"
-                        onClick={() => handleStart(campaign.id)}
-                        disabled={actionLoading === campaign.id || campaign.total_leads === 0}
-                        className="flex-1"
-                      >
-                        {actionLoading === campaign.id ? (
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <>
-                            <Play className="w-4 h-4 mr-1" />
-                            Start
-                          </>
-                        )}
-                      </Button>
-                    )}
-                    {campaign.status === 'active' && (
-                      <Button
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => handlePause(campaign.id)}
-                        disabled={actionLoading === campaign.id}
-                        className="flex-1"
-                      >
-                        {actionLoading === campaign.id ? (
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <>
-                            <Pause className="w-4 h-4 mr-1" />
-                            Pause
-                          </>
-                        )}
-                      </Button>
-                    )}
-                    {campaign.status === 'paused' && (
-                      <Button
-                        size="sm"
-                        onClick={() => handleResume(campaign.id)}
-                        disabled={actionLoading === campaign.id}
-                        className="flex-1"
-                      >
-                        {actionLoading === campaign.id ? (
-                          <RefreshCw className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <>
-                            <Play className="w-4 h-4 mr-1" />
-                            Resume
-                          </>
-                        )}
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleDelete(campaign.id)}
-                      className="text-red-400 hover:text-red-300"
-                      disabled={campaign.status === 'active'}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setShowFollowUpModal({ campaignId: campaign.id, campaignName: campaign.name })}
-                    className="w-full text-xs"
-                  >
-                    <Settings className="w-3 h-3 mr-1" />
-                    Manage Follow-ups
-                  </Button>
-                </div>
-              </motion.div>
-            )
-          })}
+          {campaigns.map((campaign, index) => (
+            <CampaignCard
+              key={campaign.id}
+              campaign={campaign}
+              index={index}
+              actionLoading={actionLoading}
+              onStart={handleStart}
+              onPause={handlePause}
+              onResume={handleResume}
+              onDelete={handleDelete}
+              onEdit={openEditModal}
+              onTriggerFollowups={handleTriggerFollowups}
+            />
+          ))}
         </div>
       )}
 
@@ -518,22 +478,32 @@ export default function Campaigns() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
-            onClick={() => setShowModal(false)}
+            onClick={() => {
+              setShowModal(false)
+              setEditingCampaign(null)
+              setFormData(defaultFormData)
+            }}
           >
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="glass rounded-2xl p-6 border border-xen-dark-700/50 w-full max-w-lg max-h-[90vh] overflow-y-auto"
+              className="card p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold text-white">Create Campaign</h2>
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {editingCampaign ? 'Edit Campaign' : 'Create Campaign'}
+                </h2>
                 <button
-                  onClick={() => setShowModal(false)}
-                  className="p-2 rounded-lg hover:bg-xen-dark-800 transition-colors"
+                  onClick={() => {
+                    setShowModal(false)
+                    setEditingCampaign(null)
+                    setFormData(defaultFormData)
+                  }}
+                  className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
                 >
-                  <X className="w-5 h-5 text-xen-dark-400" />
+                  <X className="w-5 h-5 text-gray-500" />
                 </button>
               </div>
 
@@ -547,7 +517,7 @@ export default function Campaigns() {
                     required
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                    className="input"
                     placeholder="e.g., Q1 Outreach"
                   />
                 </div>
@@ -560,185 +530,174 @@ export default function Campaigns() {
                     value={formData.description}
                     onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                     rows={2}
-                    className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                    className="input"
                     placeholder="Brief description of this campaign..."
                   />
                 </div>
 
+                {/* Sender selection / rotation */}
                 <div>
                   <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-                    Sender *
+                    Sending Mode
                   </label>
-                  <select
-                    required
-                    value={formData.sender_id || ''}
-                    onChange={(e) => setFormData({ ...formData, sender_id: parseInt(e.target.value) })}
-                    className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
-                  >
-                    <option value="">Select a sender...</option>
-                    {senders.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name || s.email} ({s.email})
-                      </option>
-                    ))}
-                  </select>
-                  {senders.length === 0 && (
-                    <p className="text-xs text-yellow-400 mt-1">
-                      <a href="/senders" className="underline">Add a sender first</a>
-                    </p>
+                  <div className="flex gap-2 mb-3">
+                    <button
+                      type="button"
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${
+                        !formData.sender_rotation_enabled
+                          ? 'bg-enterprise-red text-white border-enterprise-red'
+                          : 'bg-xen-dark-800 text-xen-dark-300 border-xen-dark-700'
+                      }`}
+                      onClick={() =>
+                        setFormData({
+                          ...formData,
+                          sender_rotation_enabled: false,
+                          sender_ids: [],
+                          max_senders: undefined,
+                        })
+                      }
+                    >
+                      Single Sender
+                    </button>
+                    <button
+                      type="button"
+                      className={`px-3 py-1.5 rounded-lg text-xs font-medium border ${
+                        formData.sender_rotation_enabled
+                          ? 'bg-enterprise-red text-white border-enterprise-red'
+                          : 'bg-xen-dark-800 text-xen-dark-300 border-xen-dark-700'
+                      }`}
+                      onClick={() =>
+                        setFormData({
+                          ...formData,
+                          sender_rotation_enabled: true,
+                          sender_ids: formData.sender_id ? [formData.sender_id] : formData.sender_ids,
+                        })
+                      }
+                    >
+                      Multiple Senders (Rotation)
+                    </button>
+                  </div>
+
+                  {!formData.sender_rotation_enabled ? (
+                    <div>
+                      <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                        Sender *
+                      </label>
+                      <select
+                        required
+                        value={formData.sender_id || ''}
+                        onChange={(e) =>
+                          setFormData({
+                            ...formData,
+                            sender_id: e.target.value ? parseInt(e.target.value) : null,
+                          })
+                        }
+                        className="input"
+                      >
+                        <option value="">Select a sender...</option>
+                        {senders.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name || s.email} ({s.email})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                          Select Senders for Rotation *
+                        </label>
+                        <div className="space-y-1 max-h-40 overflow-y-auto rounded-xl bg-xen-dark-800 border border-xen-dark-700 p-2">
+                          {senders.map((s) => {
+                            const checked = formData.sender_ids.includes(s.id)
+                            return (
+                              <label
+                                key={s.id}
+                                className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={checked}
+                                  onChange={(e) => {
+                                    const next = e.target.checked
+                                      ? [...formData.sender_ids, s.id]
+                                      : formData.sender_ids.filter((id) => id !== s.id)
+                                    setFormData({ ...formData, sender_ids: next })
+                                  }}
+                                  className="rounded border-gray-300 text-enterprise-red focus:ring-enterprise-red"
+                                />
+                                <span>
+                                  {s.name || s.email} ({s.email})
+                                </span>
+                              </label>
+                            )
+                          })}
+                          {senders.length === 0 && (
+                            <p className="text-xs text-yellow-400">
+                              <a href="/senders" className="underline">
+                                Add a sender first
+                              </a>
+                            </p>
+                          )}
+                        </div>
+                        <p className="text-xs text-xen-dark-500 mt-1">
+                          Emails will be automatically rotated across the selected senders.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs text-xen-dark-400 mb-1">
+                          Number of senders to use (optional)
+                        </label>
+                        <input
+                          type="number"
+                          min={1}
+                          max={Math.max(1, formData.sender_ids.length || senders.length || 1)}
+                          value={formData.max_senders ?? ''}
+                          onChange={(e) =>
+                            setFormData({
+                              ...formData,
+                              max_senders: e.target.value ? parseInt(e.target.value) : undefined,
+                            })
+                          }
+                          className="input text-sm"
+                          placeholder="Use all selected senders by default"
+                        />
+                      </div>
+                    </div>
                   )}
                 </div>
 
-                {/* Email Templates Section */}
+                {/* Template Category Section */}
                 <div className="border-t border-xen-dark-700 pt-4">
-                  <h3 className="text-sm font-semibold text-white mb-4">Email Templates</h3>
-                  
-                  {/* Main Email Template */}
-                  <div className="mb-4">
+                  <h3 className="text-sm font-semibold text-gray-900 mb-2">Template Category</h3>
+                  <p className="text-xs text-xen-dark-400 mb-3">
+                    Campaign will automatically rotate between all initial and follow-up templates in the selected category.
+                  </p>
+                  <div>
                     <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-                      Main Email Template *
+                      Template Category *
                     </label>
                     <select
                       required
-                      value={formData.template_id || ''}
-                      onChange={(e) => setFormData({ ...formData, template_id: parseInt(e.target.value) })}
-                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                      value={formData.template_category}
+                      onChange={(e) => setFormData({ ...formData, template_category: e.target.value })}
+                      className="input"
                     >
-                      <option value="">Select a main email template...</option>
-                      {templates
-                        .filter(t => t.template_type === 'initial' || !t.template_type)
-                        .map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name} - {t.subject.substring(0, 30)}...
-                          </option>
-                        ))}
+                      <option value="">Select a category...</option>
+                      {templateCategories.map((cat) => (
+                        <option key={cat} value={cat}>
+                          {cat}
+                        </option>
+                      ))}
                     </select>
-                    {templates.filter(t => t.template_type === 'initial' || !t.template_type).length === 0 && (
+                    {templateCategories.length === 0 && (
                       <p className="text-xs text-yellow-400 mt-1">
-                        <a href="/templates" className="underline">Create a main email template first</a>
+                        <a href="/templates" className="underline">Create a template category first</a>
                       </p>
                     )}
                   </div>
-
-                  {/* Follow-up Template Selection */}
-                  <div>
-                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-                      Follow-up Template (Optional)
-                    </label>
-                    <select
-                      value={formData.followup_template_id || ''}
-                      onChange={(e) => {
-                        setFormData({ ...formData, followup_template_id: e.target.value ? parseInt(e.target.value) : null })
-                      }}
-                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
-                    >
-                      <option value="">Select a follow-up template (optional)...</option>
-                      {templates
-                        .filter(t => t.template_type === 'followup')
-                        .map((t) => (
-                          <option key={t.id} value={t.id}>
-                            {t.name} - {t.subject.substring(0, 30)}...
-                          </option>
-                        ))}
-                    </select>
-                    {templates.filter(t => t.template_type === 'followup').length === 0 && (
-                      <p className="text-xs text-yellow-400 mt-1">
-                        <a href="/templates" className="underline">Create a follow-up template first</a> (select "Follow-up" type when creating)
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Campaign Rate Limits */}
-                <div className="border-t border-xen-dark-700 pt-4">
-                  <h3 className="text-sm font-semibold text-white mb-3">Campaign Rate Limits</h3>
-                  <p className="text-xs text-xen-dark-400 mb-4">
-                    Configure sending limits for this campaign. Lower limits help with warmup for new email accounts.
-                  </p>
-                  
-                  <div className="grid grid-cols-2 gap-4 mb-4">
-                    <div>
-                      <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-                        Daily Limit *
-                      </label>
-                      <input
-                        type="number"
-                        required
-                        min={1}
-                        max={500}
-                        value={formData.daily_limit}
-                        onChange={(e) => setFormData({ ...formData, daily_limit: parseInt(e.target.value) })}
-                        className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
-                      />
-                      <p className="text-xs text-xen-dark-500 mt-1">
-                        Default: 200/day = 1000 emails in 5 days
-                      </p>
-                    </div>
-                    <div>
-                      <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-                        Hourly Limit *
-                      </label>
-                      <input
-                        type="number"
-                        required
-                        min={1}
-                        max={100}
-                        value={formData.hourly_limit}
-                        onChange={(e) => setFormData({ ...formData, hourly_limit: parseInt(e.target.value) })}
-                        className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
-                      />
-                      <p className="text-xs text-xen-dark-500 mt-1">
-                        Recommended: 25/hour for 200/day
-                      </p>
-                    </div>
-                  </div>
-
-                  {/* Send Window */}
-                  <div className="mb-4">
-                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-                      Send Window (24/7 by default)
-                    </label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div>
-                        <label className="block text-xs text-xen-dark-400 mb-1">Start Time</label>
-                        <input
-                          type="time"
-                          value={formData.send_window_start}
-                          onChange={(e) => setFormData({ ...formData, send_window_start: e.target.value })}
-                          className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs text-xen-dark-400 mb-1">End Time</label>
-                        <input
-                          type="time"
-                          value={formData.send_window_end}
-                          onChange={(e) => setFormData({ ...formData, send_window_end: e.target.value })}
-                          className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
-                        />
-                      </div>
-                    </div>
-                    <p className="text-xs text-xen-dark-500 mt-1">
-                      Default: 00:00 - 23:59 (24/7 sending)
-                    </p>
-                  </div>
-
-                  {/* Weekdays Only */}
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      id="send_weekdays_only"
-                      checked={formData.send_weekdays_only}
-                      onChange={(e) => setFormData({ ...formData, send_weekdays_only: e.target.checked })}
-                      className="rounded border-xen-dark-700 bg-xen-dark-800 text-xen-red-500 focus:ring-xen-red-500"
-                    />
-                    <label htmlFor="send_weekdays_only" className="text-sm font-medium text-xen-dark-300">
-                      Send only on weekdays (Monday-Friday)
-                    </label>
-                  </div>
-                  <p className="text-xs text-xen-dark-500 mt-1 ml-6">
-                    Unchecked = Send 24/7 including weekends
-                  </p>
                 </div>
 
                 {/* Follow-up Settings */}
@@ -749,7 +708,7 @@ export default function Campaigns() {
                       id="followup_enabled"
                       checked={formData.followup_enabled}
                       onChange={(e) => setFormData({ ...formData, followup_enabled: e.target.checked })}
-                      className="rounded border-xen-dark-700 bg-xen-dark-800 text-xen-red-500 focus:ring-xen-red-500"
+                      className="rounded border-gray-300 text-enterprise-red focus:ring-enterprise-red"
                     />
                     <label htmlFor="followup_enabled" className="text-sm font-medium text-xen-dark-300">
                       Enable automated follow-ups
@@ -768,7 +727,7 @@ export default function Campaigns() {
                           max={14}
                           value={formData.followup_delay_days}
                           onChange={(e) => setFormData({ ...formData, followup_delay_days: parseInt(e.target.value) })}
-                          className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                          className="input text-sm"
                         />
                       </div>
                       <div>
@@ -781,7 +740,7 @@ export default function Campaigns() {
                           max={10}
                           value={formData.max_followups}
                           onChange={(e) => setFormData({ ...formData, max_followups: parseInt(e.target.value) })}
-                          className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                          className="input text-sm"
                         />
                       </div>
                     </div>
@@ -789,8 +748,8 @@ export default function Campaigns() {
                 </div>
 
                 {/* Info */}
-                <div className="p-4 rounded-xl bg-blue-500/10 border border-blue-500/30">
-                  <p className="text-sm text-blue-400">
+                <div className="p-4 rounded-xl bg-gray-100 border border-gray-300">
+                  <p className="text-sm text-gray-700">
                     💡 After creating the campaign, add leads to it from the Leads page, 
                     then come back here to start it.
                   </p>
@@ -801,7 +760,11 @@ export default function Campaigns() {
                   <Button
                     type="button"
                     variant="ghost"
-                    onClick={() => setShowModal(false)}
+                    onClick={() => {
+                      setShowModal(false)
+                      setEditingCampaign(null)
+                      setFormData(defaultFormData)
+                    }}
                     className="flex-1"
                   >
                     Cancel
@@ -814,10 +777,10 @@ export default function Campaigns() {
                     {submitting ? (
                       <>
                         <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                        Creating...
+                        {editingCampaign ? 'Updating...' : 'Creating...'}
                       </>
                     ) : (
-                      'Create Campaign'
+                      editingCampaign ? 'Update Campaign' : 'Create Campaign'
                     )}
                   </Button>
                 </div>
@@ -827,14 +790,6 @@ export default function Campaigns() {
         )}
       </AnimatePresence>
 
-      {/* Follow-up Templates Modal */}
-      {showFollowUpModal && (
-        <FollowUpTemplates
-          campaignId={showFollowUpModal.campaignId}
-          campaignName={showFollowUpModal.campaignName}
-          onClose={() => setShowFollowUpModal(null)}
-        />
-      )}
     </div>
   )
 }

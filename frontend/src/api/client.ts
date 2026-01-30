@@ -20,6 +20,7 @@ export interface Sender {
   hourly_limit: number;
   emails_sent_today: number;
   emails_sent_this_hour: number;
+  total_emails_sent: number;
   warmup_enabled: boolean;
   warmup_day: number;
   created_at: string;
@@ -67,6 +68,7 @@ export interface Template {
   is_active: boolean;
   template_type: 'initial' | 'followup';
   followup_step?: number;
+  category: string;
   created_at: string;
   updated_at: string;
 }
@@ -96,11 +98,15 @@ export interface Campaign {
   status: 'draft' | 'active' | 'paused' | 'completed' | 'cancelled';
   sender_id: number;
   template_id: number;
+  template_category?: string;
   sender?: Sender;
   template?: Template;
   total_leads: number;
   emails_sent: number;
+  followups_sent: number;
   emails_today: number;
+  // Number of unique leads that have received at least one email
+  leads_contacted?: number;
   replies_count: number;
   bounces_count: number;
   unsubscribes_count: number;
@@ -114,6 +120,10 @@ export interface Campaign {
   send_window_end: string;
   created_at: string;
   started_at?: string;
+  // Sender rotation
+  sender_rotation_enabled: boolean;
+  sender_ids?: number[];
+  max_senders?: number | null;
 }
 
 export interface DashboardStats {
@@ -121,15 +131,53 @@ export interface DashboardStats {
   active_campaigns: number;
   total_senders: number;
   emails_sent_today: number;
+  followups_sent_today: number;
   replies_today: number;
   bounces_today: number;
   total_emails_sent: number;
+  total_followups_sent: number;
   total_replies: number;
   overall_reply_rate: number;
   overall_bounce_rate: number;
   emails_by_day: Array<{ date: string; sent: number; replies: number; bounces: number }>;
+  recent_replies: Array<{
+    lead_id: number;
+    email: string;
+    name: string | null;
+    replied_at: string | null;
+    sender_id: number;
+    sender_email: string;
+    sender_name: string;
+    subject: string;
+    campaign_id: number | null;
+  }>;
   top_campaigns: Array<{ id: number; name: string; sent: number; replies: number; reply_rate: number }>;
   sender_health: Array<{ id: number; email: string; bounce_rate: number; daily_usage: number }>;
+}
+
+export interface Reply {
+  id: number;
+  lead_id: number;
+  lead_email: string;
+  lead_name: string | null;
+  sender_id: number;
+  sender_email: string;
+  sender_name: string;
+  campaign_id: number | null;
+  campaign_name: string | null;
+  subject: string;
+  original_message_id: string | null;
+  replied_at: string | null;
+  created_at: string;
+  body_text?: string | null;
+  body_preview?: string | null;
+}
+
+export interface SendReplyRequest {
+  email_log_id: number;
+  body_html: string;
+  body_text?: string;
+  subject?: string;
 }
 
 export interface ApiError {
@@ -184,7 +232,7 @@ async function apiFetch<T>(
 
 // Dashboard API
 export const dashboardApi = {
-  getStats: () => apiFetch<DashboardStats>('/analytics/dashboard'),
+  getStats: (days: number = 7) => apiFetch<DashboardStats>(`/analytics/dashboard?days=${days}`),
 };
 
 // Senders API
@@ -205,6 +253,7 @@ export const sendersApi = {
   verify: (id: number) => apiFetch<{ status: string; sender_id: number; smtp_verified: boolean; error?: string }>(`/senders/${id}/verify`, {
     method: 'POST',
   }),
+  getStatsByDate: (id: number, days: number = 30) => apiFetch<{ sender_id: number; days: number; stats_by_date: Record<string, number> }>(`/senders/${id}/stats-by-date?days=${days}`),
   skipWarmup: (id: number) => apiFetch<{ status: string; sender_id: number }>(`/senders/${id}/skip-warmup`, {
     method: 'POST',
   }),
@@ -223,6 +272,9 @@ export const templatesApi = {
     body: JSON.stringify(data),
   }),
   delete: (id: number) => apiFetch<void>(`/templates/${id}`, {
+    method: 'DELETE',
+  }),
+  deleteCategory: (categoryName: string) => apiFetch<{ status: string; category: string; templates_deleted: number }>(`/templates/category/${encodeURIComponent(categoryName)}`, {
     method: 'DELETE',
   }),
 };
@@ -265,6 +317,44 @@ export interface FollowUpTemplateUpdate {
   is_active?: boolean;
 }
 
+// Settings API
+export const settingsApi = {
+  getSettings: () => apiFetch<{
+    campaign_daily_limit: number;
+    sender_daily_limit: number;
+    reply_check_interval_minutes: number;
+    reply_look_back_hours: number;
+  }>('/settings'),
+  
+  updateSettings: (settings: {
+    campaign_daily_limit: number;
+    sender_daily_limit: number;
+    reply_check_interval_minutes: number;
+    reply_look_back_hours: number;
+  }) => apiFetch<{ status: string; message: string }>('/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  }),
+  
+  resetAllData: () => apiFetch<{
+    status: string;
+    message: string;
+    deleted: {
+      campaigns: number;
+      email_logs: number;
+      leads: number;
+      campaign_senders: number;
+      followup_templates: number;
+    };
+    preserved: {
+      senders: string;
+      templates: string;
+    };
+  }>('/settings/reset-all-data', {
+    method: 'POST',
+  }),
+};
+
 // Follow-up Templates API
 export const followupTemplatesApi = {
   list: (campaignId: number) => apiFetch<FollowUpTemplate[]>(`/templates/followups/${campaignId}`),
@@ -283,11 +373,11 @@ export const followupTemplatesApi = {
 
 // Leads API
 export const leadsApi = {
-  list: (campaignId?: number, page: number = 1, pageSize: number = 1000) => {
+  list: (campaignId?: number, page: number = 1, pageSize: number = 100) => {
     const params = new URLSearchParams();
     if (campaignId) params.append('campaign_id', campaignId.toString());
     params.append('page', page.toString());
-    params.append('page_size', pageSize.toString());
+    params.append('page_size', pageSize.toString()); // Backend enforces max 100
     return apiFetch<PaginatedList<Lead>>(`/leads?${params.toString()}`);
   },
   stats: (campaignId?: number) => {
@@ -334,6 +424,11 @@ export const leadsApi = {
     
     return response.json();
   },
+  deleteByCampaign: (campaignId: number) =>
+    apiFetch<{ status: string; campaign_id: number; deleted: number }>(
+      `/leads/by-campaign/${campaignId}`,
+      { method: 'DELETE' }
+    ),
 };
 
 // Campaigns API
@@ -360,6 +455,9 @@ export const campaignsApi = {
   resume: (id: number) => apiFetch<Campaign>(`/campaigns/${id}/resume`, {
     method: 'POST',
   }),
+  triggerFollowups: (id: number) => apiFetch<{ status: string; campaign_id: number; task_id: string; message: string }>(`/campaigns/${id}/trigger-followups`, {
+    method: 'POST',
+  }),
 };
 
 // Analytics API
@@ -369,3 +467,18 @@ export const analyticsApi = {
   sender: (id: number) => apiFetch<any>(`/analytics/senders/${id}`),
 };
 
+// Replies API
+export const repliesApi = {
+  list: (page: number = 1, pageSize: number = 20, senderId?: number, campaignId?: number) => {
+    const params = new URLSearchParams();
+    params.append('page', page.toString());
+    params.append('page_size', pageSize.toString());
+    if (senderId) params.append('sender_id', senderId.toString());
+    if (campaignId) params.append('campaign_id', campaignId.toString());
+    return apiFetch<PaginatedList<Reply>>(`/replies?${params.toString()}`);
+  },
+  send: (data: SendReplyRequest) => apiFetch<{ status: string; message_id: string; to: string }>('/replies/send', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+};
