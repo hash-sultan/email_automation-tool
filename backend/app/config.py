@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     API_PORT: int = 8000
     API_PREFIX: str = "/api/v1"
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:5173"]
+    PUBLIC_BASE_URL: str = "http://localhost:8000"
     
     # Database
     DATABASE_URL: str = Field(..., description="PostgreSQL connection URL")

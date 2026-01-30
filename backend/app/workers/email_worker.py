@@ -68,18 +68,28 @@ def send_email_task(
             logger.info(f"Lead {lead.email} is not contactable, skipping")
             return {"status": "skipped", "message": f"Lead status: {lead.status}"}
         
-        # CRITICAL: Check if this lead has already been contacted for this step
-        # This prevents duplicate sends if the same task is queued multiple times
-        if followup_step == 0:
-            # For initial email, check if lead has already received initial email
-            if lead.last_sent_at is not None and lead.step == 0:
-                logger.info(f"Lead {lead.email} already received initial email, skipping duplicate send")
-                return {"status": "skipped", "message": "Lead already contacted"}
-        else:
-            # For follow-ups, check if this specific step has already been sent
-            if lead.step >= followup_step:
-                logger.info(f"Lead {lead.email} already at step {lead.step}, skipping step {followup_step}")
-                return {"status": "skipped", "message": f"Step {followup_step} already sent"}
+        # CRITICAL: Check for duplicates using email_logs (most reliable method)
+        # This prevents duplicate sends even if tasks are queued multiple times
+        from app.models.email_log import EmailLog, EmailStatus
+        
+        existing_email = db.query(EmailLog).filter(
+            EmailLog.lead_id == lead_id,
+            EmailLog.campaign_id == campaign_id,
+            EmailLog.followup_step == followup_step,
+            EmailLog.status.in_([EmailStatus.SENT, EmailStatus.REPLIED, EmailStatus.SENDING])
+        ).first()
+        
+        if existing_email:
+            logger.info(
+                f"Lead {lead.email} already has email for step {followup_step} (log_id: {existing_email.id}), skipping duplicate",
+                extra={
+                    "lead_id": lead_id,
+                    "campaign_id": campaign_id,
+                    "followup_step": followup_step,
+                    "existing_log_id": existing_email.id
+                }
+            )
+            return {"status": "skipped", "message": f"Step {followup_step} already sent (log_id: {existing_email.id})"}
         
         # Send email
         email_service = EmailService(db)
@@ -160,7 +170,7 @@ def send_email_task(
 def send_bulk_emails_task(
     self,
     campaign_id: int,
-    limit: int = 50
+    limit: int = 100  # Increased from 50 to 100 for better throughput
 ):
     """
     Queue emails for multiple leads in a campaign.
@@ -187,16 +197,76 @@ def send_bulk_emails_task(
         ).limit(limit).all()
         
         if not leads:
+            # Check if campaign is complete or just waiting for more leads
+            # Refresh campaign to get latest status
+            db.refresh(campaign)
+            if campaign.status == CampaignStatus.ACTIVE:
+                # Double-check if there are any leads that might have been missed
+                # (e.g., leads that were just added or status changed)
+                # Exclude leads that have pending emails
+                from app.models.email_log import EmailLog, EmailStatus
+                leads_with_pending = db.query(EmailLog.lead_id).filter(
+                    EmailLog.campaign_id == campaign_id,
+                    EmailLog.followup_step == 0,
+                    EmailLog.status.in_([EmailStatus.QUEUED, EmailStatus.SENDING])
+                ).subquery()
+                
+                remaining_check = db.query(Lead).filter(
+                    Lead.campaign_id == campaign_id,
+                    Lead.status.in_([LeadStatus.QUEUED, LeadStatus.NEW]),
+                    Lead.replied == False,
+                    Lead.bounced == False,
+                    Lead.unsubscribed == False,
+                    Lead.last_sent_at.is_(None),
+                    ~Lead.id.in_(db.query(leads_with_pending.c.lead_id))
+                ).count()
+                
+                if remaining_check > 0:
+                    # There are leads, but they might have pending emails - schedule a retry
+                    logger.info(
+                        f"Campaign {campaign_id} has {remaining_check} leads but none were selected, scheduling retry",
+                        extra={"campaign_id": campaign_id, "remaining_leads": remaining_check}
+                    )
+                    send_bulk_emails_task.apply_async(
+                        args=[campaign_id, limit],
+                        countdown=60  # Retry in 60 seconds
+                    )
+                    return {"status": "retry_scheduled", "message": f"Retrying in 60s, {remaining_check} leads remaining"}
+            
             return {"status": "complete", "message": "No leads to contact"}
+        
+        # Check for pending emails to avoid duplicate queuing
+        from app.models.email_log import EmailLog, EmailStatus
         
         # Queue individual send tasks
         queued = 0
+        skipped = 0
         rate_limiter = RateLimiter()
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
         for lead in leads:
+            # Check if there's already a pending email for this lead/step
+            pending_email = db.query(EmailLog).filter(
+                EmailLog.lead_id == lead.id,
+                EmailLog.campaign_id == campaign_id,
+                EmailLog.followup_step == 0,
+                EmailLog.status.in_([EmailStatus.QUEUED, EmailStatus.SENDING])
+            ).first()
+            
+            if pending_email:
+                logger.debug(
+                    f"Skipping lead {lead.email} - already has pending email (log_id: {pending_email.id})",
+                    extra={
+                        "lead_id": lead.id,
+                        "campaign_id": campaign_id,
+                        "pending_log_id": pending_email.id
+                    }
+                )
+                skipped += 1
+                continue
+            
             # Fixed 10-second delay between emails
             delay_seconds = 10
             
@@ -210,11 +280,95 @@ def send_bulk_emails_task(
         
         loop.close()
         
-        logger.info(f"Queued {queued} emails for campaign {campaign_id}")
+        logger.info(
+            f"Queued {queued} emails for campaign {campaign_id} (skipped {skipped} duplicates)",
+            extra={
+                "campaign_id": campaign_id,
+                "queued": queued,
+                "skipped": skipped
+            }
+        )
+        
+        # Check if there are more leads to send and campaign is still active
+        # Refresh campaign to get latest status and counters
+        db.refresh(campaign)
+        
+        if campaign.status == CampaignStatus.ACTIVE:
+            # Check if campaign has reached daily limit
+            can_send, reason = campaign.can_send_now
+            if can_send:
+                # Check if there are more leads waiting to be contacted
+                # Exclude leads that have pending emails (QUEUED or SENDING status)
+                from app.models.email_log import EmailLog, EmailStatus
+                leads_with_pending = db.query(EmailLog.lead_id).filter(
+                    EmailLog.campaign_id == campaign_id,
+                    EmailLog.followup_step == 0,
+                    EmailLog.status.in_([EmailStatus.QUEUED, EmailStatus.SENDING])
+                ).subquery()
+                
+                remaining_leads = db.query(Lead).filter(
+                    Lead.campaign_id == campaign_id,
+                    Lead.status.in_([LeadStatus.QUEUED, LeadStatus.NEW]),
+                    Lead.replied == False,
+                    Lead.bounced == False,
+                    Lead.unsubscribed == False,
+                    Lead.last_sent_at.is_(None),
+                    ~Lead.id.in_(db.query(leads_with_pending.c.lead_id))
+                ).count()
+                
+                if remaining_leads > 0:
+                    # Automatically continue sending after a short delay
+                    # Use a shorter delay to keep the campaign moving continuously
+                    # Delay based on how many emails were queued (to allow them to start processing)
+                    # But keep it short to maintain continuous sending
+                    if queued > 0:
+                        # If we queued emails, wait for them to start processing (10s per email, but cap at reasonable time)
+                        next_batch_delay = min(120, max(30, queued * 2))  # 30-120 seconds based on batch size
+                    else:
+                        # If no emails were queued (all skipped), check again soon
+                        next_batch_delay = 30
+                    
+                    logger.info(
+                        f"Campaign {campaign_id} has {remaining_leads} remaining leads, scheduling next batch in {next_batch_delay}s",
+                        extra={
+                            "campaign_id": campaign_id,
+                            "remaining_leads": remaining_leads,
+                            "next_batch_delay": next_batch_delay,
+                            "emails_today": campaign.emails_today,
+                            "daily_limit": campaign.daily_limit,
+                            "queued_in_batch": queued
+                        }
+                    )
+                    
+                    # Schedule next batch automatically
+                    send_bulk_emails_task.apply_async(
+                        args=[campaign_id, limit],
+                        countdown=next_batch_delay
+                    )
+                else:
+                    logger.info(
+                        f"Campaign {campaign_id} has no more leads to contact",
+                        extra={
+                            "campaign_id": campaign_id,
+                            "emails_today": campaign.emails_today,
+                            "daily_limit": campaign.daily_limit
+                        }
+                    )
+            else:
+                logger.info(
+                    f"Campaign {campaign_id} cannot send more: {reason}",
+                    extra={
+                        "campaign_id": campaign_id,
+                        "reason": reason,
+                        "emails_today": campaign.emails_today,
+                        "daily_limit": campaign.daily_limit
+                    }
+                )
         
         return {
             "status": "queued",
             "count": queued,
+            "skipped": skipped,
             "campaign_id": campaign_id
         }
 

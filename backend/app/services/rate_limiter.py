@@ -23,8 +23,11 @@ class RateLimiter:
     Implements:
     - Per-sender daily limits (max 500/day)
     - Per-campaign daily limits
-    - 10-second delay between emails
-    - 10-minute pause after every 50 emails
+    - Adaptive delays based on sender rotation:
+      * 1 sender: 10s delay, 50 emails → 10min pause
+      * 2 senders: 7s delay, 75 emails → 7min pause
+      * 3+ senders: 5s delay, 100 emails → 5min pause
+    - Per-sender batch pause (if one sender pauses, others continue)
     """
     
     # Redis key prefixes
@@ -52,6 +55,7 @@ class RateLimiter:
         self,
         sender_id: int,
         campaign_id: int,
+        num_rotation_senders: int = 1,
         sender_hourly_limit: int = None,
         sender_daily_limit: int = None,
         campaign_hourly_limit: int = None,
@@ -60,10 +64,12 @@ class RateLimiter:
         """
         Check if we can send an email now.
         
-        New rate limiting logic:
-        - 10 second delay between emails
-        - 10 minute pause after every 50 emails
-        - Daily limit only (no hourly limits)
+        Adaptive rate limiting based on sender rotation:
+        - 1 sender: 10s delay, 50 emails → 10min pause
+        - 2 senders: 7s delay, 75 emails → 7min pause
+        - 3+ senders: 5s delay, 100 emails → 5min pause
+        
+        Batch pause is per-sender (if one sender pauses, others continue).
         
         Returns:
             (allowed: bool, wait_seconds: int)
@@ -72,41 +78,55 @@ class RateLimiter:
         """
         r = await self._get_redis()
         
-        # Use defaults if not provided
+        # Adaptive settings based on rotation count
+        if num_rotation_senders >= 3:
+            min_interval = 5  # 5 seconds with 3+ senders
+        elif num_rotation_senders == 2:
+            min_interval = 7  # 7 seconds with 2 senders
+        else:
+            min_interval = 10  # 10 seconds with 1 sender
+        
+        # Load system settings for global caps
+        try:
+            from app.api.settings import load_settings
+            system_settings = load_settings()
+            max_sender_limit = system_settings.get('sender_daily_limit', 200)
+            max_campaign_limit = system_settings.get('campaign_daily_limit', 1000)
+        except Exception:
+            # Fallback to defaults if settings can't be loaded
+            max_sender_limit = 200
+            max_campaign_limit = 1000
+        
+        # Use defaults if not provided, but cap at settings limits
         sender_daily_limit = sender_daily_limit or settings.MAX_EMAILS_PER_DAY
+        # Cap sender limit at settings value (settings take precedence)
+        sender_daily_limit = min(sender_daily_limit, max_sender_limit)
+        
         campaign_daily_limit = campaign_daily_limit or 100
+        # Cap campaign limit at settings value (settings take precedence)
+        campaign_daily_limit = min(campaign_daily_limit, max_campaign_limit)
         
         # Keys
         sender_daily_key = f"{self.PREFIX_SENDER_DAILY}:{sender_id}"
         campaign_daily_key = f"{self.PREFIX_CAMPAIGN_DAILY}:{campaign_id}"
         last_send_key = f"{self.PREFIX_LAST_SEND}:{sender_id}"
-        batch_count_key = f"{self.PREFIX_BATCH_COUNT}:{sender_id}"
-        batch_pause_key = f"{self.PREFIX_BATCH_PAUSE}:{sender_id}"
         
         # Get current counts and timestamps
         pipeline = r.pipeline()
         pipeline.get(sender_daily_key)
         pipeline.get(campaign_daily_key)
         pipeline.get(last_send_key)
-        pipeline.get(batch_count_key)
-        pipeline.get(batch_pause_key)
         
         results = await pipeline.execute()
         
         sender_daily_count = int(results[0] or 0)
         campaign_daily_count = int(results[1] or 0)
         last_send_time = float(results[2] or 0)
-        batch_count = int(results[3] or 0)
-        batch_pause_end = float(results[4] or 0)
         
         now = datetime.utcnow()
         now_timestamp = now.timestamp()
         
-        # Check if we're in a batch pause
-        if batch_pause_end > 0 and now_timestamp < batch_pause_end:
-            wait_seconds = int(batch_pause_end - now_timestamp)
-            logger.debug(f"Batch pause active: wait {wait_seconds}s")
-            return False, wait_seconds
+        # Batch pause disabled - removed per user request
         
         # Check sender daily limit (max 500/day)
         max_daily = min(sender_daily_limit, SafetyLimits.ABSOLUTE_MAX_EMAILS_PER_DAY)
@@ -124,24 +144,32 @@ class RateLimiter:
             logger.debug(f"Campaign daily limit reached: {campaign_daily_count}/{campaign_daily_limit}")
             return False, wait_seconds
         
-        # Check 10-second minimum interval between emails
+        # Check adaptive minimum interval between emails (per sender)
         if last_send_time > 0:
             elapsed = now_timestamp - last_send_time
-            min_interval = settings.MIN_SEND_INTERVAL_SECONDS
-            
             if elapsed < min_interval:
                 wait_seconds = int(min_interval - elapsed)
-                logger.debug(f"Min interval not reached: wait {wait_seconds}s")
+                logger.debug(f"Min interval not reached: wait {wait_seconds}s (rotation: {num_rotation_senders} senders, interval: {min_interval}s)")
                 return False, wait_seconds
         
         return True, 0
     
-    async def record_send(self, sender_id: int, campaign_id: int) -> None:
+    async def record_send(
+        self, 
+        sender_id: int, 
+        campaign_id: int,
+        num_rotation_senders: int = 1
+    ) -> None:
         """
         Record that an email was sent.
-        Updates counters and handles batch pause logic.
+        Updates counters and handles adaptive batch pause logic (per-sender).
+        
+        Batch pause is per-sender, so if one sender pauses, others in rotation continue.
         """
         r = await self._get_redis()
+        
+        # Batch pause disabled - removed per user request
+        # No delays after batch completion
         
         now = datetime.utcnow()
         now_timestamp = now.timestamp()
@@ -157,23 +185,6 @@ class RateLimiter:
         sender_daily_key = f"{self.PREFIX_SENDER_DAILY}:{sender_id}"
         campaign_daily_key = f"{self.PREFIX_CAMPAIGN_DAILY}:{campaign_id}"
         last_send_key = f"{self.PREFIX_LAST_SEND}:{sender_id}"
-        batch_count_key = f"{self.PREFIX_BATCH_COUNT}:{sender_id}"
-        batch_pause_key = f"{self.PREFIX_BATCH_PAUSE}:{sender_id}"
-        
-        # Increment batch count
-        batch_count = await r.incr(batch_count_key)
-        await r.expire(batch_count_key, seconds_until_midnight)
-        
-        # Check if we need to start a batch pause (after 50 emails)
-        if batch_count >= settings.EMAIL_BATCH_SIZE:
-            # Reset batch count and set pause end time
-            pause_end = now_timestamp + settings.BATCH_PAUSE_SECONDS
-            pipeline = r.pipeline()
-            pipeline.set(batch_count_key, 0)  # Reset batch count
-            pipeline.set(batch_pause_key, pause_end)
-            pipeline.expire(batch_pause_key, settings.BATCH_PAUSE_SECONDS + 60)
-            await pipeline.execute()
-            logger.info(f"Batch of {settings.EMAIL_BATCH_SIZE} emails completed, pausing for {settings.BATCH_PAUSE_SECONDS}s")
         
         # Increment counters with expiry
         pipeline = r.pipeline()
@@ -192,7 +203,10 @@ class RateLimiter:
         
         await pipeline.execute()
         
-        logger.debug(f"Recorded send for sender {sender_id}, campaign {campaign_id}, batch: {batch_count}")
+        logger.debug(
+            f"Recorded send for sender {sender_id}, campaign {campaign_id} "
+            f"(rotation: {num_rotation_senders} senders)"
+        )
     
     async def get_random_delay(
         self,
@@ -219,17 +233,8 @@ class RateLimiter:
         
         if sender_id:
             sender_daily = await r.get(f"{self.PREFIX_SENDER_DAILY}:{sender_id}")
-            batch_count = await r.get(f"{self.PREFIX_BATCH_COUNT}:{sender_id}")
-            batch_pause = await r.get(f"{self.PREFIX_BATCH_PAUSE}:{sender_id}")
             stats["sender_daily_count"] = int(sender_daily or 0)
-            stats["batch_count"] = int(batch_count or 0)
-            if batch_pause:
-                pause_end = float(batch_pause)
-                now = datetime.utcnow().timestamp()
-                if pause_end > now:
-                    stats["batch_pause_remaining"] = int(pause_end - now)
-                else:
-                    stats["batch_pause_remaining"] = 0
+            # Batch pause disabled - removed per user request
         
         if campaign_id:
             campaign_daily = await r.get(f"{self.PREFIX_CAMPAIGN_DAILY}:{campaign_id}")
