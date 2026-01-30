@@ -70,6 +70,11 @@ class BounceHandler:
         'permanently rejected',
         'address rejected',
         'bad destination',
+        'address not found',  # Common Gmail error
+        'message blocked',  # Common Gmail error
+        'recipient address rejected',
+        '550 5.1.1',  # Gmail error code for invalid recipient
+        '550 5.4.1',  # Gmail error code for invalid recipient
     ]
     
     # Keywords indicating soft bounces

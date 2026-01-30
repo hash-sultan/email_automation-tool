@@ -1,8 +1,94 @@
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
-import { Save, Shield, Clock, Mail } from 'lucide-react'
+import { Save, Mail, Trash2, AlertTriangle, Settings as SettingsIcon } from 'lucide-react'
 import Button from '../components/Button'
+import { settingsApi } from '../api/client'
+import toast from 'react-hot-toast'
+
+interface SystemSettings {
+  campaign_daily_limit: number
+  sender_daily_limit: number
+  reply_check_interval_minutes: number
+  reply_look_back_hours: number
+}
 
 export default function Settings() {
+  const [resetting, setResetting] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [settings, setSettings] = useState<SystemSettings>({
+    campaign_daily_limit: 500,
+    sender_daily_limit: 200,
+    reply_check_interval_minutes: 5,
+    reply_look_back_hours: 24,
+  })
+
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        const data = await settingsApi.getSettings()
+        setSettings(data)
+      } catch (err) {
+        console.error('Failed to load settings:', err)
+        // Use defaults if API fails
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchSettings()
+  }, [])
+
+  const handleResetAllData = async () => {
+    const firstConfirm = confirm(
+      '⚠️ DANGER ZONE ⚠️\n\n' +
+      'This will PERMANENTLY DELETE:\n' +
+      '• All campaigns\n' +
+      '• All leads\n' +
+      '• All email logs (including replies)\n' +
+      '• All analytics data\n' +
+      '• Reset all sender counters to 0\n\n' +
+      'This will KEEP:\n' +
+      '• All senders (intact)\n' +
+      '• All templates (intact)\n\n' +
+      'This action CANNOT be undone!\n\n' +
+      'Are you absolutely sure?'
+    )
+
+    if (!firstConfirm) return
+
+    const userInput = prompt('Type "RESET" (all caps) to confirm:')
+    if (userInput !== 'RESET') {
+      toast.error('Reset cancelled - confirmation text did not match')
+      return
+    }
+
+    setResetting(true)
+    try {
+      const result = await settingsApi.resetAllData()
+      toast.success(
+        `Reset complete! Deleted ${result.deleted.campaigns} campaigns, ${result.deleted.email_logs} email logs, ${result.deleted.leads} leads.`,
+        { duration: 6000 }
+      )
+      // Reload the page to refresh all data
+      setTimeout(() => {
+        window.location.reload()
+      }, 2000)
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : 'Failed to reset data'
+      toast.error(errorMsg)
+    } finally {
+      setResetting(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-enterprise-red"></div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6 max-w-4xl">
       {/* Header */}
@@ -10,7 +96,7 @@ export default function Settings() {
         <motion.h1
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="text-2xl font-bold text-white"
+          className="text-3xl font-semibold text-gray-900"
         >
           Settings
         </motion.h1>
@@ -18,145 +104,60 @@ export default function Settings() {
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="text-xen-dark-400 mt-1"
+          className="text-gray-500 mt-1"
         >
           Configure system settings and safety thresholds
         </motion.p>
       </div>
 
-      {/* Safety Settings */}
+      {/* Daily Limits */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.2 }}
-        className="glass rounded-2xl p-6 border border-xen-dark-700/50"
+        className="card p-6"
       >
         <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 rounded-xl bg-xen-red-500/20 flex items-center justify-center">
-            <Shield className="w-5 h-5 text-xen-red-400" />
+          <div className="w-10 h-10 rounded-xl bg-enterprise-red/10 flex items-center justify-center">
+            <SettingsIcon className="w-5 h-5 text-enterprise-red" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-white">Safety Thresholds</h2>
-            <p className="text-sm text-xen-dark-400">
-              Configure limits to protect sender reputation
+            <h2 className="text-lg font-semibold text-gray-900">Daily Limits</h2>
+            <p className="text-sm text-gray-500">
+              Configure sending limits for campaigns and senders
             </p>
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
-            <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-              Max Emails Per Day
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Campaign Daily Limit
             </label>
             <input
               type="number"
-              defaultValue={200}
-              className="w-full px-4 py-2.5 bg-xen-dark-800/50 border border-xen-dark-700 rounded-xl text-white focus:border-xen-red-500 focus:ring-1 focus:ring-xen-red-500 transition-colors"
+              value={settings.campaign_daily_limit}
+              onChange={(e) => setSettings({ ...settings, campaign_daily_limit: parseInt(e.target.value) || 500 })}
+              min={1}
+              max={1000}
+              className="input"
             />
-            <p className="text-xs text-xen-dark-500 mt-1">Hard limit: 500</p>
+            <p className="text-xs text-gray-500 mt-1">Maximum emails per campaign per day (max: 1000)</p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-              Max Emails Per Hour
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Sender Daily Limit
             </label>
             <input
               type="number"
-              defaultValue={20}
-              className="w-full px-4 py-2.5 bg-xen-dark-800/50 border border-xen-dark-700 rounded-xl text-white focus:border-xen-red-500 focus:ring-1 focus:ring-xen-red-500 transition-colors"
+              value={settings.sender_daily_limit}
+              onChange={(e) => setSettings({ ...settings, sender_daily_limit: parseInt(e.target.value) || 200 })}
+              min={1}
+              max={500}
+              className="input"
             />
-            <p className="text-xs text-xen-dark-500 mt-1">Hard limit: 50</p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-              Max Bounce Rate (%)
-            </label>
-            <input
-              type="number"
-              defaultValue={5}
-              step={0.1}
-              className="w-full px-4 py-2.5 bg-xen-dark-800/50 border border-xen-dark-700 rounded-xl text-white focus:border-xen-red-500 focus:ring-1 focus:ring-xen-red-500 transition-colors"
-            />
-            <p className="text-xs text-xen-dark-500 mt-1">System stops at 10%</p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-              Max Complaint Rate (%)
-            </label>
-            <input
-              type="number"
-              defaultValue={0.1}
-              step={0.01}
-              className="w-full px-4 py-2.5 bg-xen-dark-800/50 border border-xen-dark-700 rounded-xl text-white focus:border-xen-red-500 focus:ring-1 focus:ring-xen-red-500 transition-colors"
-            />
-            <p className="text-xs text-xen-dark-500 mt-1">System stops at 0.5%</p>
-          </div>
-        </div>
-      </motion.div>
-
-      {/* Send Window */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.3 }}
-        className="glass rounded-2xl p-6 border border-xen-dark-700/50"
-      >
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
-            <Clock className="w-5 h-5 text-blue-400" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-white">Send Window</h2>
-            <p className="text-sm text-xen-dark-400">Configure when emails can be sent</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-              Start Time
-            </label>
-            <input
-              type="time"
-              defaultValue="09:00"
-              className="w-full px-4 py-2.5 bg-xen-dark-800/50 border border-xen-dark-700 rounded-xl text-white focus:border-xen-red-500 focus:ring-1 focus:ring-xen-red-500 transition-colors"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-xen-dark-300 mb-2">
-              End Time
-            </label>
-            <input
-              type="time"
-              defaultValue="17:00"
-              className="w-full px-4 py-2.5 bg-xen-dark-800/50 border border-xen-dark-700 rounded-xl text-white focus:border-xen-red-500 focus:ring-1 focus:ring-xen-red-500 transition-colors"
-            />
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-xen-dark-300 mb-2">Timezone</label>
-            <select className="w-full px-4 py-2.5 bg-xen-dark-800/50 border border-xen-dark-700 rounded-xl text-white focus:border-xen-red-500 focus:ring-1 focus:ring-xen-red-500 transition-colors">
-              <option value="America/New_York">Eastern Time (ET)</option>
-              <option value="America/Chicago">Central Time (CT)</option>
-              <option value="America/Denver">Mountain Time (MT)</option>
-              <option value="America/Los_Angeles">Pacific Time (PT)</option>
-              <option value="UTC">UTC</option>
-            </select>
-          </div>
-
-          <div className="flex items-center gap-3">
-            <input
-              type="checkbox"
-              id="weekdaysOnly"
-              defaultChecked
-              className="w-5 h-5 rounded bg-xen-dark-800 border-xen-dark-600 text-xen-red-500 focus:ring-xen-red-500"
-            />
-            <label htmlFor="weekdaysOnly" className="text-sm text-xen-dark-300">
-              Send on weekdays only
-            </label>
+            <p className="text-xs text-gray-500 mt-1">Maximum emails per sender per day (max: 500)</p>
           </div>
         </div>
       </motion.div>
@@ -166,40 +167,100 @@ export default function Settings() {
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.4 }}
-        className="glass rounded-2xl p-6 border border-xen-dark-700/50"
+        className="card p-6"
       >
         <div className="flex items-center gap-3 mb-6">
           <div className="w-10 h-10 rounded-xl bg-green-500/20 flex items-center justify-center">
             <Mail className="w-5 h-5 text-green-400" />
           </div>
           <div>
-            <h2 className="text-lg font-semibold text-white">Reply Detection</h2>
-            <p className="text-sm text-xen-dark-400">Configure IMAP monitoring settings</p>
+            <h2 className="text-lg font-semibold text-gray-900">Reply Detection</h2>
+            <p className="text-sm text-gray-500">Configure IMAP monitoring settings</p>
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <div>
-            <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
               Check Interval (minutes)
             </label>
             <input
               type="number"
-              defaultValue={5}
-              className="w-full px-4 py-2.5 bg-xen-dark-800/50 border border-xen-dark-700 rounded-xl text-white focus:border-xen-red-500 focus:ring-1 focus:ring-xen-red-500 transition-colors"
+              value={settings.reply_check_interval_minutes}
+              onChange={(e) => setSettings({ ...settings, reply_check_interval_minutes: parseInt(e.target.value) || 5 })}
+              min={1}
+              max={60}
+              className="input"
             />
+            <p className="text-xs text-gray-500 mt-1">How often to check for replies</p>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+            <label className="block text-sm font-medium text-gray-700 mb-2">
               Look Back (hours)
             </label>
             <input
               type="number"
-              defaultValue={24}
-              className="w-full px-4 py-2.5 bg-xen-dark-800/50 border border-xen-dark-700 rounded-xl text-white focus:border-xen-red-500 focus:ring-1 focus:ring-xen-red-500 transition-colors"
+              value={settings.reply_look_back_hours}
+              onChange={(e) => setSettings({ ...settings, reply_look_back_hours: parseInt(e.target.value) || 24 })}
+              min={1}
+              max={168}
+              className="input"
             />
+            <p className="text-xs text-gray-500 mt-1">How far back to check for replies</p>
           </div>
+        </div>
+      </motion.div>
+
+      {/* Reset All Data - Danger Zone */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.5 }}
+        className="card p-6 border-2 border-red-500/30 bg-red-500/5"
+      >
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center">
+            <AlertTriangle className="w-5 h-5 text-red-400" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-gray-900">Reset All Data</h2>
+            <p className="text-sm text-gray-500">
+              Start fresh by deleting all campaigns and activity data
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div className="p-4 rounded-lg bg-yellow-500/10 border border-yellow-500/30">
+            <p className="text-sm font-medium text-yellow-400 mb-2">⚠️ This will permanently delete:</p>
+            <ul className="text-sm text-gray-600 space-y-1 list-disc list-inside">
+              <li>All campaigns</li>
+              <li>All leads</li>
+              <li>All email logs (including replies)</li>
+              <li>All analytics data</li>
+              <li>All sender counters (reset to 0)</li>
+            </ul>
+          </div>
+
+          <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/30">
+            <p className="text-sm font-medium text-green-400 mb-2">✅ This will be preserved:</p>
+            <ul className="text-sm text-gray-600 space-y-1 list-disc list-inside">
+              <li>All senders (intact, counters reset)</li>
+              <li>All templates (completely intact)</li>
+            </ul>
+          </div>
+
+          <Button
+            variant="danger"
+            icon={Trash2}
+            onClick={handleResetAllData}
+            loading={resetting}
+            disabled={resetting}
+            className="w-full"
+          >
+            {resetting ? 'Resetting...' : 'Reset All Campaign & Activity Data'}
+          </Button>
         </div>
       </motion.div>
 
@@ -207,10 +268,26 @@ export default function Settings() {
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.5 }}
+        transition={{ delay: 0.6 }}
         className="flex justify-end"
       >
-        <Button icon={Save}>Save Settings</Button>
+        <Button 
+          icon={Save} 
+          onClick={async () => {
+            setSaving(true)
+            try {
+              await settingsApi.updateSettings(settings)
+              toast.success('Settings saved successfully!')
+            } catch (err) {
+              toast.error(err instanceof Error ? err.message : 'Failed to save settings')
+            } finally {
+              setSaving(false)
+            }
+          }}
+          loading={saving}
+        >
+          Save Settings
+        </Button>
       </motion.div>
     </div>
   )

@@ -1,13 +1,22 @@
+import { lazy, Suspense } from 'react'
 import { Routes, Route } from 'react-router-dom'
 import { Toaster } from 'react-hot-toast'
 import Layout from './components/Layout'
-import Dashboard from './pages/Dashboard'
-import Campaigns from './pages/Campaigns'
-import Leads from './pages/Leads'
-import Templates from './pages/Templates'
-import Senders from './pages/Senders'
-import Analytics from './pages/Analytics'
-import Settings from './pages/Settings'
+import { SkeletonCard } from './components/SkeletonLoader'
+
+// Lazy load pages for code splitting
+const Dashboard = lazy(() => import('./pages/Dashboard'))
+const Campaigns = lazy(() => import('./pages/Campaigns'))
+const Leads = lazy(() => import('./pages/Leads'))
+const Senders = lazy(() => import('./pages/Senders'))
+const Analytics = lazy(() => import('./pages/Analytics'))
+const Settings = lazy(() => import('./pages/Settings'))
+const Replies = lazy(() => import('./pages/Replies'))
+// Template routes
+const TemplatesIndex = lazy(() => import('./pages/templates/TemplatesIndex'))
+const TemplatesCategoryList = lazy(() => import('./pages/templates/TemplatesCategoryList'))
+const TemplatesCategoryView = lazy(() => import('./pages/templates/TemplatesCategoryView'))
+const TemplateForm = lazy(() => import('./pages/templates/TemplateForm'))
 
 function App() {
   return (
@@ -37,13 +46,127 @@ function App() {
       />
       <Routes>
         <Route path="/" element={<Layout />}>
-          <Route index element={<Dashboard />} />
-          <Route path="campaigns" element={<Campaigns />} />
-          <Route path="leads" element={<Leads />} />
-          <Route path="templates" element={<Templates />} />
-          <Route path="senders" element={<Senders />} />
-          <Route path="analytics" element={<Analytics />} />
-          <Route path="settings" element={<Settings />} />
+          <Route 
+            index 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <Dashboard />
+              </Suspense>
+            } 
+          />
+          <Route 
+            path="campaigns" 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <Campaigns />
+              </Suspense>
+            } 
+          />
+          <Route 
+            path="campaigns/new" 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <Campaigns />
+              </Suspense>
+            } 
+          />
+          <Route 
+            path="campaigns/:campaignId" 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <Campaigns />
+              </Suspense>
+            } 
+          />
+          <Route 
+            path="leads" 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <Leads />
+              </Suspense>
+            } 
+          />
+          <Route 
+            path="templates" 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <TemplatesIndex />
+              </Suspense>
+            }
+          >
+            <Route 
+              index 
+              element={
+                <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                  <TemplatesCategoryList />
+                </Suspense>
+              } 
+            />
+            <Route 
+              path="categories/new" 
+              element={
+                <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                  <TemplateForm />
+                </Suspense>
+              } 
+            />
+            <Route 
+              path="categories/:categoryId" 
+              element={
+                <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                  <TemplatesCategoryView />
+                </Suspense>
+              } 
+            />
+            <Route 
+              path="categories/:categoryId/new" 
+              element={
+                <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                  <TemplateForm />
+                </Suspense>
+              } 
+            />
+            <Route 
+              path="categories/:categoryId/:templateId/edit" 
+              element={
+                <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                  <TemplateForm />
+                </Suspense>
+              } 
+            />
+          </Route>
+          <Route 
+            path="senders" 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <Senders />
+              </Suspense>
+            } 
+          />
+          <Route 
+            path="replies" 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <Replies />
+              </Suspense>
+            } 
+          />
+          <Route 
+            path="analytics" 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <Analytics />
+              </Suspense>
+            } 
+          />
+          <Route 
+            path="settings" 
+            element={
+              <Suspense fallback={<div className="p-6"><SkeletonCard /></div>}>
+                <Settings />
+              </Suspense>
+            } 
+          />
         </Route>
       </Routes>
     </>

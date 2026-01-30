@@ -23,21 +23,29 @@ import {
   Pie,
   Cell,
 } from 'recharts'
-import { dashboardApi, type DashboardStats } from '../api/client'
+import { dashboardApi, campaignsApi, analyticsApi, type DashboardStats, type Campaign } from '../api/client'
 
 const COLORS = ['#ef4444', '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6']
 
 export default function Analytics() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
+  const [campaigns, setCampaigns] = useState<Campaign[]>([])
+  const [selectedCampaignId, setSelectedCampaignId] = useState<number | null>(null)
+  const [campaignAnalytics, setCampaignAnalytics] = useState<any>(null)
   const [loading, setLoading] = useState(true)
+  const [campaignLoading, setCampaignLoading] = useState(false)
   const [, setError] = useState<string | null>(null)
 
   const fetchData = async () => {
     setLoading(true)
     setError(null)
     try {
-      const data = await dashboardApi.getStats()
+      const [data, campaignsData] = await Promise.all([
+        dashboardApi.getStats(),
+        campaignsApi.list(),
+      ])
       setStats(data)
+      setCampaigns(campaignsData)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load analytics')
     } finally {
@@ -45,9 +53,30 @@ export default function Analytics() {
     }
   }
 
+  const fetchCampaignAnalytics = async (campaignId: number) => {
+    setCampaignLoading(true)
+    try {
+      const data = await analyticsApi.campaign(campaignId)
+      setCampaignAnalytics(data)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load campaign analytics')
+      setCampaignAnalytics(null)
+    } finally {
+      setCampaignLoading(false)
+    }
+  }
+
   useEffect(() => {
     fetchData()
   }, [])
+
+  useEffect(() => {
+    if (selectedCampaignId) {
+      fetchCampaignAnalytics(selectedCampaignId)
+    } else {
+      setCampaignAnalytics(null)
+    }
+  }, [selectedCampaignId])
 
   // Transform data for charts
   const chartData = stats?.emails_by_day?.map(day => ({
@@ -76,7 +105,7 @@ export default function Analytics() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-96">
-        <RefreshCw className="w-8 h-8 text-xen-red-400 animate-spin" />
+        <RefreshCw className="w-8 h-8 text-enterprise-red animate-spin" />
       </div>
     )
   }
@@ -89,7 +118,7 @@ export default function Analytics() {
           <motion.h1
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-2xl font-bold text-white"
+            className="text-3xl font-semibold text-gray-900"
           >
             Analytics
           </motion.h1>
@@ -97,7 +126,7 @@ export default function Analytics() {
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
-            className="text-xen-dark-400 mt-1"
+            className="text-gray-500 mt-1"
           >
             Track your email performance and deliverability
           </motion.p>
@@ -106,9 +135,9 @@ export default function Analytics() {
         <button
           onClick={fetchData}
           disabled={loading}
-          className="p-2 rounded-lg bg-xen-dark-800 hover:bg-xen-dark-700 transition-colors disabled:opacity-50"
+          className="p-2 rounded-lg bg-gray-100 hover:bg-gray-200 transition-colors disabled:opacity-50"
         >
-          <RefreshCw className={`w-5 h-5 text-xen-dark-400 ${loading ? 'animate-spin' : ''}`} />
+          <RefreshCw className={`w-5 h-5 text-gray-600 ${loading ? 'animate-spin' : ''}`} />
         </button>
       </div>
 
@@ -118,29 +147,29 @@ export default function Analytics() {
         animate={{ opacity: 1, y: 0 }}
         className="grid grid-cols-2 md:grid-cols-4 gap-4"
       >
-        <div className="glass rounded-2xl p-6 border border-xen-dark-700/50">
+        <div className="card p-6">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center">
-              <Send className="w-5 h-5 text-blue-400" />
+            <div className="w-10 h-10 rounded-xl bg-enterprise-red/10 flex items-center justify-center">
+              <Send className="w-5 h-5 text-enterprise-red" />
             </div>
             <div>
-              <p className="text-xs text-xen-dark-500">Total Sent</p>
-              <p className="text-2xl font-bold text-white">{stats?.total_emails_sent || 0}</p>
+              <p className="text-xs text-gray-500">Total Sent</p>
+              <p className="text-2xl font-semibold text-gray-900">{stats?.total_emails_sent || 0}</p>
             </div>
           </div>
-          <div className="flex items-center gap-1 text-xs text-xen-dark-400">
+          <div className="flex items-center gap-1 text-xs text-gray-500">
             <Calendar className="w-3 h-3" />
             <span>{stats?.emails_sent_today || 0} today</span>
           </div>
         </div>
 
-        <div className="glass rounded-2xl p-6 border border-xen-dark-700/50">
+        <div className="card p-6">
           <div className="flex items-center gap-3 mb-3">
             <div className="w-10 h-10 rounded-xl bg-green-500/20 flex items-center justify-center">
               <MessageSquare className="w-5 h-5 text-green-400" />
             </div>
             <div>
-              <p className="text-xs text-xen-dark-500">Reply Rate</p>
+              <p className="text-xs text-gray-500">Reply Rate</p>
               <p className="text-2xl font-bold text-green-400">{replyRate}%</p>
             </div>
           </div>
@@ -150,7 +179,7 @@ export default function Analytics() {
           </div>
         </div>
 
-        <div className="glass rounded-2xl p-6 border border-xen-dark-700/50">
+        <div className="card p-6">
           <div className="flex items-center gap-3 mb-3">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
               parseFloat(bounceRate) > 5 ? 'bg-red-500/20' : 'bg-green-500/20'
@@ -183,7 +212,7 @@ export default function Analytics() {
           </div>
         </div>
 
-        <div className="glass rounded-2xl p-6 border border-xen-dark-700/50">
+        <div className="card p-6">
           <div className="flex items-center gap-3 mb-3">
             <div className="w-10 h-10 rounded-xl bg-purple-500/20 flex items-center justify-center">
               <Users className="w-5 h-5 text-purple-400" />
@@ -193,7 +222,7 @@ export default function Analytics() {
               <p className="text-2xl font-bold text-purple-400">{stats?.total_leads || 0}</p>
             </div>
           </div>
-          <div className="flex items-center gap-1 text-xs text-xen-dark-400">
+          <div className="flex items-center gap-1 text-xs text-gray-500">
             <BarChart3 className="w-3 h-3" />
             <span>{stats?.active_campaigns || 0} active campaigns</span>
           </div>
@@ -209,7 +238,7 @@ export default function Analytics() {
           transition={{ delay: 0.2 }}
           className="glass rounded-2xl p-6 border border-xen-dark-700/50"
         >
-          <h3 className="text-lg font-semibold text-white mb-6">Email Activity (Last 7 Days)</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-6">Email Activity (Last 7 Days)</h3>
           <div className="h-64">
             {chartData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
@@ -253,7 +282,7 @@ export default function Analytics() {
                 </AreaChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-full flex items-center justify-center text-xen-dark-500">
+              <div className="h-full flex items-center justify-center text-gray-400">
                 No data yet. Start sending emails to see analytics.
               </div>
             )}
@@ -267,7 +296,7 @@ export default function Analytics() {
           transition={{ delay: 0.3 }}
           className="glass rounded-2xl p-6 border border-xen-dark-700/50"
         >
-          <h3 className="text-lg font-semibold text-white mb-6">Email Distribution</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-6">Email Distribution</h3>
           <div className="h-64">
             {pieData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
@@ -296,7 +325,7 @@ export default function Analytics() {
                 </PieChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-full flex items-center justify-center text-xen-dark-500">
+              <div className="h-full flex items-center justify-center text-gray-400">
                 No data to display yet.
               </div>
             )}
@@ -304,41 +333,116 @@ export default function Analytics() {
         </motion.div>
       </div>
 
-      {/* Top Campaigns */}
+      {/* Campaign Performance */}
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.4 }}
         className="glass rounded-2xl p-6 border border-xen-dark-700/50"
       >
-        <h3 className="text-lg font-semibold text-white mb-6">Campaign Performance</h3>
-        {stats?.top_campaigns && stats.top_campaigns.length > 0 ? (
-          <div className="space-y-4">
-            {stats.top_campaigns.map((campaign, index) => (
-              <div key={campaign.id} className="flex items-center gap-4">
-                <span className="text-xen-dark-500 w-6">{index + 1}.</span>
-                <div className="flex-1">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="font-medium text-white">{campaign.name}</span>
-                    <span className="text-sm text-green-400">{campaign.reply_rate.toFixed(1)}% reply rate</span>
-                  </div>
-                  <div className="h-2 bg-xen-dark-800 rounded-full overflow-hidden">
-                    <div 
-                      className="h-full bg-gradient-to-r from-xen-red-500 to-xen-red-400 rounded-full"
-                      style={{ width: `${Math.min(campaign.reply_rate * 5, 100)}%` }}
-                    />
-                  </div>
-                  <div className="flex items-center justify-between mt-1 text-xs text-xen-dark-400">
-                    <span>{campaign.sent} sent</span>
-                    <span>{campaign.replies} replies</span>
-                  </div>
+        <div className="flex items-center justify-between mb-6">
+          <h3 className="text-lg font-semibold text-gray-900">Campaign Performance</h3>
+          <select
+            value={selectedCampaignId || ''}
+            onChange={(e) => setSelectedCampaignId(e.target.value ? Number(e.target.value) : null)}
+            className="input text-sm"
+          >
+            <option value="">Select a campaign...</option>
+            {campaigns.map(campaign => (
+              <option key={campaign.id} value={campaign.id}>{campaign.name}</option>
+            ))}
+          </select>
+        </div>
+
+        {campaignLoading ? (
+          <div className="flex items-center justify-center py-12">
+            <RefreshCw className="w-8 h-8 text-enterprise-red animate-spin" />
+          </div>
+        ) : campaignAnalytics ? (
+          <div className="space-y-6">
+            {/* Campaign Overview */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="p-4 rounded-xl bg-gray-50 border border-gray-200">
+                <p className="text-xs text-gray-500 mb-1">Total Leads</p>
+                <p className="text-2xl font-semibold text-gray-900">{campaignAnalytics.overview?.total_leads || 0}</p>
+              </div>
+              <div className="p-4 rounded-xl bg-gray-50 border border-gray-200">
+                <p className="text-xs text-gray-500 mb-1">Emails Sent</p>
+                <p className="text-2xl font-semibold text-enterprise-red">{campaignAnalytics.overview?.emails_sent || 0}</p>
+              </div>
+              <div className="p-4 rounded-xl bg-gray-50 border border-gray-200">
+                <p className="text-xs text-gray-500 mb-1">Replies</p>
+                <p className="text-2xl font-bold text-green-400">{campaignAnalytics.overview?.replies || 0}</p>
+              </div>
+              <div className="p-4 rounded-xl bg-xen-dark-800/50 border border-xen-dark-700">
+                <p className="text-xs text-xen-dark-500 mb-1">Bounces</p>
+                <p className="text-2xl font-bold text-red-400">{campaignAnalytics.overview?.bounces || 0}</p>
+              </div>
+            </div>
+
+            {/* Performance Rates */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+              <div className="p-4 rounded-xl bg-green-500/10 border border-green-500/30">
+                <p className="text-xs text-xen-dark-400 mb-1">Reply Rate</p>
+                <p className="text-2xl font-bold text-green-400">
+                  {campaignAnalytics.rates?.reply_rate?.toFixed(1) || '0.0'}%
+                </p>
+              </div>
+              <div className={`p-4 rounded-xl border ${
+                (campaignAnalytics.rates?.bounce_rate || 0) > 5 
+                  ? 'bg-red-500/10 border-red-500/30' 
+                  : 'bg-green-500/10 border-green-500/30'
+              }`}>
+                <p className="text-xs text-xen-dark-400 mb-1">Bounce Rate</p>
+                <p className={`text-2xl font-bold ${
+                  (campaignAnalytics.rates?.bounce_rate || 0) > 5 ? 'text-red-400' : 'text-green-400'
+                }`}>
+                  {campaignAnalytics.rates?.bounce_rate?.toFixed(1) || '0.0'}%
+                </p>
+              </div>
+              <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/30">
+                <p className="text-xs text-xen-dark-400 mb-1">Click Rate</p>
+                <p className="text-2xl font-bold text-purple-400">
+                  {campaignAnalytics.rates?.click_rate?.toFixed(1) || '0.0'}%
+                </p>
+              </div>
+            </div>
+
+            {/* Lead Status Breakdown */}
+            {campaignAnalytics.lead_statuses && Object.keys(campaignAnalytics.lead_statuses).length > 0 && (
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900 mb-3">Lead Status Breakdown</h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {Object.entries(campaignAnalytics.lead_statuses).map(([status, count]: [string, any]) => (
+                    <div key={status} className="p-3 rounded-lg bg-xen-dark-800/50 border border-xen-dark-700">
+                      <p className="text-xs text-xen-dark-400 capitalize">{status.replace('_', ' ')}</p>
+                      <p className="text-lg font-semibold text-gray-900">{count}</p>
+                    </div>
+                  ))}
                 </div>
               </div>
-            ))}
+            )}
+
+            {/* Email Status Breakdown */}
+            {campaignAnalytics.email_statuses && Object.keys(campaignAnalytics.email_statuses).length > 0 && (
+              <div>
+                <h4 className="text-sm font-semibold text-gray-900 mb-3">Email Status Breakdown</h4>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  {Object.entries(campaignAnalytics.email_statuses).map(([status, count]: [string, any]) => (
+                    <div key={status} className="p-3 rounded-lg bg-xen-dark-800/50 border border-xen-dark-700">
+                      <p className="text-xs text-xen-dark-400 capitalize">{status}</p>
+                      <p className="text-lg font-semibold text-gray-900">{count}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="text-center py-8 text-xen-dark-500">
-            No campaign data yet. Create and run campaigns to see performance.
+            {campaigns.length > 0 
+              ? "Select a campaign from the dropdown to see its performance."
+              : "No campaign data yet. Create and run campaigns to see performance."}
           </div>
         )}
       </motion.div>
@@ -351,7 +455,7 @@ export default function Analytics() {
           transition={{ delay: 0.5 }}
           className="glass rounded-2xl p-6 border border-xen-dark-700/50"
         >
-          <h3 className="text-lg font-semibold text-white mb-6">Sender Health</h3>
+          <h3 className="text-lg font-semibold text-gray-900 mb-6">Sender Health</h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {stats.sender_health.map((sender) => (
               <div 
@@ -362,7 +466,7 @@ export default function Analytics() {
                     : 'bg-green-500/10 border-green-500/30'
                 }`}
               >
-                <p className="font-medium text-white truncate">{sender.email}</p>
+                <p className="font-medium text-gray-900 truncate">{sender.email}</p>
                 <div className="flex items-center justify-between mt-2">
                   <span className={`text-sm ${
                     sender.bounce_rate > 0.05 ? 'text-red-400' : 'text-green-400'
