@@ -32,6 +32,8 @@ class Template(Base):
     # Template info
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
+    # Logical grouping for rotation (e.g. "Real Estate", "Car Parts", "SaaS")
+    category = Column(String(100), nullable=False, index=True, default="General")
     
     # Email content
     subject = Column(String(255), nullable=False)

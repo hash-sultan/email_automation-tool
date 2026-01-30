@@ -54,14 +54,35 @@ def get_template(template_id: int, db: Session = Depends(get_db)):
 @router.post("/", response_model=TemplateResponse)
 def create_template(template_data: TemplateCreate, db: Session = Depends(get_db)):
     """Create a new template."""
+    # Normalize category name: use title case (first letter uppercase, rest lowercase)
+    # But first check if a category with this name (case-insensitive) already exists
+    # If so, use the existing category's exact case to prevent duplicates
+    existing_template = db.query(Template).filter(
+        Template.category.ilike(template_data.category)
+    ).first()
+    
+    normalized_category = existing_template.category if existing_template else template_data.category.title()
+    
     # Extract placeholders
     renderer = get_renderer()
     placeholders = list(renderer.extract_placeholders(
         template_data.subject + " " + template_data.body_html
     ))
     
+    template_data_dict = template_data.model_dump()
+    template_data_dict['category'] = normalized_category
+    
+    # Ensure template_type is set correctly (default to "initial" if not provided)
+    if 'template_type' not in template_data_dict or not template_data_dict['template_type']:
+        template_data_dict['template_type'] = 'initial'
+    elif template_data_dict['template_type'] not in ['initial', 'followup']:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid template_type: {template_data_dict['template_type']}. Must be 'initial' or 'followup'"
+        )
+    
     template = Template(
-        **template_data.model_dump(),
+        **template_data_dict,
         placeholders_used=placeholders
     )
     
@@ -84,6 +105,15 @@ def update_template(
         raise HTTPException(status_code=404, detail="Template not found")
     
     update_data = template_data.model_dump(exclude_unset=True)
+    
+    # Normalize category name if it's being updated
+    if 'category' in update_data:
+        existing_template = db.query(Template).filter(
+            Template.category.ilike(update_data['category'])
+        ).first()
+        
+        normalized_category = existing_template.category if existing_template else update_data['category'].title()
+        update_data['category'] = normalized_category
     
     # Re-extract placeholders if content changed
     if 'subject' in update_data or 'body_html' in update_data:
@@ -123,6 +153,39 @@ def delete_template(template_id: int, db: Session = Depends(get_db)):
     db.commit()
     
     return {"status": "deleted", "template_id": template_id}
+
+
+@router.delete("/category/{category_name}")
+def delete_category(category_name: str, db: Session = Depends(get_db)):
+    """Delete all templates in a category."""
+    # Find all templates in this category
+    templates = db.query(Template).filter(Template.category == category_name).all()
+    
+    if not templates:
+        raise HTTPException(status_code=404, detail="Category not found")
+    
+    template_ids = [t.id for t in templates]
+    
+    # Check if any templates in this category are used by campaigns
+    campaigns_using = db.query(Campaign).filter(
+        Campaign.template_id.in_(template_ids)
+    ).count()
+    
+    if campaigns_using > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Category is used by {campaigns_using} campaign(s). Please remove templates from campaigns first."
+        )
+    
+    # Delete all templates in the category
+    deleted_count = db.query(Template).filter(Template.category == category_name).delete()
+    db.commit()
+    
+    return {
+        "status": "deleted",
+        "category": category_name,
+        "templates_deleted": deleted_count
+    }
 
 
 @router.post("/{template_id}/preview")

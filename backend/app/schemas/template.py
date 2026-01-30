@@ -12,6 +12,8 @@ class TemplateBase(BaseModel):
     """Base template schema"""
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
+    # Logical category for rotation (e.g. "Real Estate", "Car Parts", "SaaS")
+    category: str = Field(..., min_length=1, max_length=100)
     subject: str = Field(..., min_length=1, max_length=255)
     body_html: str = Field(..., min_length=1)
     body_plain: Optional[str] = None
