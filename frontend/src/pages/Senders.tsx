@@ -13,6 +13,9 @@ import {
   X,
   Server,
   Pencil,
+  Calendar,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react'
 import Button from '../components/Button'
 import Badge from '../components/Badge'
@@ -60,6 +63,9 @@ export default function Senders() {
   const [editingSenderId, setEditingSenderId] = useState<number | null>(null)
   const [formData, setFormData] = useState<SenderFormData>(defaultFormData)
   const [submitting, setSubmitting] = useState(false)
+  const [expandedSenderId, setExpandedSenderId] = useState<number | null>(null)
+  const [statsByDate, setStatsByDate] = useState<Record<string, number>>({})
+  const [loadingStats, setLoadingStats] = useState(false)
 
   const fetchSenders = async () => {
     setLoading(true)
@@ -278,7 +284,7 @@ export default function Senders() {
           <motion.h1
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-2xl font-bold text-white"
+            className="text-3xl font-semibold text-gray-900"
           >
             Email Senders
           </motion.h1>
@@ -286,7 +292,7 @@ export default function Senders() {
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
-            className="text-xen-dark-400 mt-1"
+            className="text-gray-500 mt-1"
           >
             Manage your sending email accounts
           </motion.p>
@@ -321,17 +327,17 @@ export default function Senders() {
       {/* Senders Grid */}
       {loading && senders.length === 0 ? (
         <div className="flex items-center justify-center h-64">
-          <RefreshCw className="w-8 h-8 text-xen-red-400 animate-spin" />
+          <RefreshCw className="w-8 h-8 text-enterprise-red animate-spin" />
         </div>
       ) : senders.length === 0 ? (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass rounded-2xl p-12 border border-xen-dark-700/50 text-center"
+          className="card p-12 text-center"
         >
-          <Mail className="w-16 h-16 mx-auto text-xen-dark-600 mb-4" />
-          <h3 className="text-xl font-semibold text-white mb-2">No senders yet</h3>
-          <p className="text-xen-dark-400 mb-6">
+          <Mail className="w-16 h-16 mx-auto text-gray-400 mb-4" />
+          <h3 className="text-xl font-semibold text-gray-900 mb-2">No senders yet</h3>
+          <p className="text-gray-500 mb-6">
             Add your first email sender to start sending campaigns
           </p>
           <Button onClick={openAddModal}>
@@ -347,16 +353,16 @@ export default function Senders() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.05 }}
-              className="glass rounded-2xl p-6 border border-xen-dark-700/50 hover:border-xen-dark-600/50 transition-colors"
+              className="card p-6 hover:shadow-md transition-all"
             >
               <div className="flex items-start justify-between mb-4">
                 <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-xl bg-xen-red-500/20 flex items-center justify-center">
-                    <Mail className="w-6 h-6 text-xen-red-400" />
+                  <div className="w-12 h-12 rounded-xl bg-enterprise-red/20 flex items-center justify-center">
+                    <Mail className="w-6 h-6 text-enterprise-red" />
                   </div>
                   <div>
-                    <h3 className="font-semibold text-white">{sender.name || sender.email}</h3>
-                    <p className="text-sm text-xen-dark-400">{sender.email}</p>
+                    <h3 className="font-semibold text-gray-900">{sender.name || sender.email}</h3>
+                    <p className="text-sm text-gray-600">{sender.email}</p>
                   </div>
                 </div>
                 <Badge variant={sender.is_active ? 'success' : 'warning'}>
@@ -365,16 +371,71 @@ export default function Senders() {
               </div>
 
               {/* Stats */}
-              <div className="mb-4">
-                <div className="p-3 rounded-lg bg-xen-dark-800/50">
-                  <p className="text-xs text-xen-dark-500">Sent Today</p>
-                  <p className="text-lg font-semibold text-white">
-                    {sender.emails_sent_today} / {sender.current_daily_limit || sender.daily_limit || sender.base_daily_limit || 200}
+              <div className="mb-4 space-y-2">
+                <div className="p-3 rounded-lg bg-gray-50">
+                  <p className="text-xs text-gray-500">Total Sent</p>
+                  <p className="text-lg font-semibold text-gray-900">
+                    {sender.total_emails_sent || 0}
                   </p>
-                  <p className="text-xs text-xen-dark-500 mt-1">
+                  <p className="text-xs text-gray-500 mt-1">
+                    All time
+                  </p>
+                </div>
+                <div className="p-3 rounded-lg bg-gray-50">
+                  <p className="text-xs text-gray-500">Sent Today</p>
+                  <p className="text-lg font-semibold text-gray-900">
+                    {sender.emails_sent_today || 0}
+                  </p>
+                  <p className="text-xs text-gray-500 mt-1">
                     Daily Limit: {sender.base_daily_limit || 200} (Max: 500)
                   </p>
                 </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={async () => {
+                    if (expandedSenderId === sender.id) {
+                      setExpandedSenderId(null)
+                    } else {
+                      setExpandedSenderId(sender.id)
+                      setLoadingStats(true)
+                      try {
+                        const stats = await sendersApi.getStatsByDate(sender.id, 30)
+                        setStatsByDate(stats.stats_by_date)
+                      } catch (err) {
+                        toast.error('Failed to load stats')
+                      } finally {
+                        setLoadingStats(false)
+                      }
+                    }
+                  }}
+                  className="w-full text-xs text-gray-600 hover:text-gray-900"
+                >
+                  <Calendar className="w-3 h-3 mr-1" />
+                  {expandedSenderId === sender.id ? 'Hide' : 'View'} by Date
+                  {expandedSenderId === sender.id ? <ChevronUp className="w-3 h-3 ml-1" /> : <ChevronDown className="w-3 h-3 ml-1" />}
+                </Button>
+                {expandedSenderId === sender.id && (
+                  <div className="p-3 rounded-lg bg-gray-50 border border-gray-200 max-h-60 overflow-y-auto">
+                    {loadingStats ? (
+                      <p className="text-xs text-gray-500">Loading...</p>
+                    ) : Object.keys(statsByDate).length === 0 ? (
+                      <p className="text-xs text-gray-500">No emails sent in the last 30 days</p>
+                    ) : (
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold text-gray-700 mb-2">Last 30 Days:</p>
+                        {Object.entries(statsByDate)
+                          .sort((a, b) => b[0].localeCompare(a[0]))
+                          .map(([date, count]) => (
+                            <div key={date} className="flex justify-between text-xs">
+                              <span className="text-gray-600">{new Date(date).toLocaleDateString()}</span>
+                              <span className="font-semibold text-gray-900">{count}</span>
+                            </div>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Warmup Status */}
@@ -400,7 +461,7 @@ export default function Senders() {
               )}
 
               {/* Provider Info */}
-              <div className="flex items-center gap-2 mb-4 text-sm text-xen-dark-400">
+              <div className="flex items-center gap-2 mb-4 text-sm text-gray-600">
                 <Server className="w-4 h-4" />
                 <span className="capitalize">{sender.provider}</span>
                 {sender.smtp_host && <span>• {sender.smtp_host}</span>}
@@ -463,18 +524,18 @@ export default function Senders() {
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="glass rounded-2xl p-6 border border-xen-dark-700/50 w-full max-w-lg max-h-[90vh] overflow-y-auto"
+              className="card p-6 w-full max-w-lg max-h-[90vh] overflow-y-auto"
               onClick={(e) => e.stopPropagation()}
             >
               <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold text-white">
+                <h2 className="text-xl font-semibold text-gray-900">
                   {editingSenderId ? 'Edit Email Sender' : 'Add Email Sender'}
                 </h2>
                 <button
                   onClick={() => setShowModal(false)}
-                  className="p-2 rounded-lg hover:bg-xen-dark-800 transition-colors"
+                  className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
                 >
-                  <X className="w-5 h-5 text-xen-dark-400" />
+                  <X className="w-5 h-5 text-gray-500" />
                 </button>
               </div>
 
@@ -482,7 +543,7 @@ export default function Senders() {
                 {/* Basic Info */}
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
                       Email Address *
                     </label>
                     <input
@@ -490,37 +551,37 @@ export default function Senders() {
                       required
                       value={formData.email}
                       onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                      className="input"
                       placeholder="your-email@gmail.com"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
                       Display Name
                     </label>
                     <input
                       type="text"
                       value={formData.name}
                       onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                      className="input"
                       placeholder="John Smith"
                     />
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
                       Daily Limit (Max 500/day)
                     </label>
                     <input
                       type="number"
                       value={formData.daily_limit}
                       onChange={(e) => setFormData({ ...formData, daily_limit: parseInt(e.target.value) || 200 })}
-                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                      className="input"
                       min={10}
                       max={500}
                     />
-                    <p className="text-xs text-xen-dark-500 mt-1">Maximum 500 emails per day per sender</p>
+                    <p className="text-xs text-gray-500 mt-1">Maximum 500 emails per day per sender</p>
                   </div>
 
                   <div className="flex items-center gap-2">
@@ -529,26 +590,29 @@ export default function Senders() {
                       id="warmup_enabled"
                       checked={formData.warmup_enabled}
                       onChange={(e) => setFormData({ ...formData, warmup_enabled: e.target.checked })}
-                      className="rounded border-xen-dark-700 bg-xen-dark-800 text-xen-red-500 focus:ring-xen-red-500"
+                      className="rounded border-gray-300 text-enterprise-red focus:ring-enterprise-red"
                     />
-                    <label htmlFor="warmup_enabled" className="text-sm text-xen-dark-300">
+                    <label htmlFor="warmup_enabled" className="text-sm text-gray-700">
                       Enable warmup (gradual sending increase for new accounts)
+                      <span className="text-xs text-gray-500 block mt-1">
+                        Uncheck this if using old/established email accounts
+                      </span>
                     </label>
                   </div>
                 </div>
 
                 {/* SMTP Settings */}
                 <div className="border-t border-xen-dark-700 pt-4">
-                  <h3 className="text-sm font-medium text-xen-dark-300 mb-3">SMTP Settings</h3>
+                  <h3 className="text-sm font-medium text-gray-700 mb-3">SMTP Settings</h3>
                   
                   <div className="grid grid-cols-2 gap-3">
                     <div>
-                      <label className="block text-xs text-xen-dark-400 mb-1">SMTP Host</label>
+                      <label className="block text-xs text-gray-600 mb-1">SMTP Host</label>
                       <input
                         type="text"
                         value={formData.smtp_host}
                         onChange={(e) => setFormData({ ...formData, smtp_host: e.target.value })}
-                        className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                        className="input text-sm"
                         placeholder="smtp.gmail.com"
                       />
                     </div>
@@ -558,7 +622,7 @@ export default function Senders() {
                         type="number"
                         value={formData.smtp_port}
                         onChange={(e) => setFormData({ ...formData, smtp_port: parseInt(e.target.value) })}
-                        className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                        className="input text-sm"
                       />
                     </div>
                   </div>
@@ -569,7 +633,7 @@ export default function Senders() {
                       type="text"
                       value={formData.smtp_username}
                       onChange={(e) => setFormData({ ...formData, smtp_username: e.target.value })}
-                      className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                      className="input text-sm"
                       placeholder="Same as email (leave blank)"
                     />
                   </div>
@@ -581,7 +645,7 @@ export default function Senders() {
                       required
                       value={formData.smtp_password}
                       onChange={(e) => setFormData({ ...formData, smtp_password: e.target.value })}
-                      className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                      className="input text-sm"
                       placeholder="Your app password"
                     />
                     <p className="text-xs text-xen-dark-500 mt-1">
@@ -595,7 +659,7 @@ export default function Senders() {
                       id="use_tls"
                       checked={formData.use_tls}
                       onChange={(e) => setFormData({ ...formData, use_tls: e.target.checked })}
-                      className="rounded border-xen-dark-700 bg-xen-dark-800 text-xen-red-500 focus:ring-xen-red-500"
+                      className="rounded border-gray-300 text-enterprise-red focus:ring-enterprise-red"
                     />
                     <label htmlFor="use_tls" className="text-sm text-xen-dark-300">
                       Use TLS encryption
@@ -625,7 +689,7 @@ export default function Senders() {
                         type="text"
                         value={formData.imap_host}
                         onChange={(e) => setFormData({ ...formData, imap_host: e.target.value })}
-                        className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                        className="input text-sm"
                         placeholder="imap.gmail.com"
                       />
                     </div>
@@ -635,7 +699,7 @@ export default function Senders() {
                         type="number"
                         value={formData.imap_port}
                         onChange={(e) => setFormData({ ...formData, imap_port: parseInt(e.target.value) })}
-                        className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                        className="input text-sm"
                       />
                     </div>
                   </div>
@@ -646,7 +710,7 @@ export default function Senders() {
                       type="text"
                       value={formData.imap_username}
                       onChange={(e) => setFormData({ ...formData, imap_username: e.target.value })}
-                      className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                      className="input text-sm"
                       placeholder="Usually same as email"
                     />
                   </div>
@@ -657,7 +721,7 @@ export default function Senders() {
                       type="password"
                       value={formData.imap_password}
                       onChange={(e) => setFormData({ ...formData, imap_password: e.target.value })}
-                      className="w-full px-3 py-2 rounded-lg bg-xen-dark-800 border border-xen-dark-700 text-white text-sm focus:outline-none focus:border-xen-red-500"
+                      className="input text-sm"
                       placeholder="Leave empty to reuse SMTP password"
                     />
                     <p className="text-xs text-xen-dark-500 mt-1">

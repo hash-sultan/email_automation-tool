@@ -27,7 +27,7 @@ export default function DataTable<T extends { id: number | string }>({
     return (
       <div className="glass rounded-2xl border border-xen-dark-700/50 overflow-hidden">
         <div className="p-8 text-center">
-          <div className="w-8 h-8 border-2 border-xen-red-500 border-t-transparent rounded-full animate-spin mx-auto" />
+          <div className="w-8 h-8 border-2 border-enterprise-red border-t-transparent rounded-full animate-spin mx-auto" />
           <p className="text-xen-dark-400 mt-4">Loading...</p>
         </div>
       </div>

@@ -37,7 +37,7 @@ const statusColors: Record<string, { bg: string; text: string }> = {
   queued: { bg: 'bg-orange-500/20', text: 'text-orange-400' },
   contacted: { bg: 'bg-green-500/20', text: 'text-green-400' },
   replied: { bg: 'bg-green-500/20', text: 'text-green-400' },
-  bounced: { bg: 'bg-red-500/20', text: 'text-red-400' },
+  bounced: { bg: 'bg-enterprise-red/20', text: 'text-enterprise-red' },
   unsubscribed: { bg: 'bg-gray-500/20', text: 'text-gray-400' },
   converted: { bg: 'bg-purple-500/20', text: 'text-purple-400' },
 }
@@ -58,6 +58,10 @@ const getStatusDisplayName = (status: string): string => {
 
 export default function Leads() {
   const [leads, setLeads] = useState<Lead[]>([])
+  const [page, setPage] = useState(1)
+  const pageSize = 100
+  const [totalPages, setTotalPages] = useState(1)
+  const [totalLeads, setTotalLeads] = useState(0)
   const [stats, setStats] = useState({
     total: 0,
     new: 0,
@@ -86,11 +90,13 @@ export default function Leads() {
     setError(null)
     try {
       const [leadsResponse, campaignsData, statsData] = await Promise.all([
-        leadsApi.list(selectedCampaign, 1, 1000), // Fetch up to 1000 leads for display
+        leadsApi.list(selectedCampaign, page, pageSize),
         campaignsApi.list(),
         leadsApi.stats(selectedCampaign), // Get accurate stats from API
       ])
       setLeads(leadsResponse.items)
+      setTotalLeads(leadsResponse.total)
+      setTotalPages(leadsResponse.pages || 1)
       setStats(statsData)
       setCampaigns(campaignsData)
     } catch (err) {
@@ -102,7 +108,7 @@ export default function Leads() {
 
   useEffect(() => {
     fetchData()
-  }, [selectedCampaign])
+  }, [selectedCampaign, page])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -179,7 +185,7 @@ export default function Leads() {
           <motion.h1
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-2xl font-bold text-white"
+            className="text-3xl font-semibold text-gray-900"
           >
             Leads
           </motion.h1>
@@ -187,7 +193,7 @@ export default function Leads() {
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
-            className="text-xen-dark-400 mt-1"
+            className="text-gray-500 mt-1"
           >
             Manage your contacts and import leads
           </motion.p>
@@ -215,16 +221,16 @@ export default function Leads() {
         className="grid grid-cols-5 gap-4"
       >
         {[
-          { label: 'Total', value: stats.total, color: 'text-white' },
-          { label: 'New', value: stats.new, color: 'text-blue-400' },
-          { label: 'Queued', value: stats.queued, color: 'text-orange-400' },
-          { label: 'Sent', value: stats.contacted, color: 'text-green-400' },
-          { label: 'Replied', value: stats.replied, color: 'text-green-400' },
-          { label: 'Bounced', value: stats.bounced, color: 'text-red-400' },
+          { label: 'Total', value: stats.total, color: 'text-gray-900' },
+          { label: 'New', value: stats.new, color: 'text-enterprise-red' },
+          { label: 'Queued', value: stats.queued, color: 'text-orange-600' },
+          { label: 'Sent', value: stats.contacted, color: 'text-green-600' },
+          { label: 'Replied', value: stats.replied, color: 'text-green-600' },
+          { label: 'Bounced', value: stats.bounced, color: 'text-enterprise-red' },
         ].map((stat) => (
-          <div key={stat.label} className="glass rounded-xl p-4 border border-xen-dark-700/50">
-            <p className="text-xs text-xen-dark-500">{stat.label}</p>
-            <p className={`text-2xl font-bold ${stat.color}`}>{stat.value}</p>
+          <div key={stat.label} className="card p-4">
+            <p className="text-xs text-gray-500">{stat.label}</p>
+            <p className={`text-2xl font-semibold ${stat.color}`}>{stat.value}</p>
           </div>
         ))}
       </motion.div>
@@ -234,12 +240,12 @@ export default function Leads() {
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
-          className="p-4 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center gap-3"
+          className="p-4 rounded-xl bg-enterprise-red/10 border border-enterprise-red/30 flex items-center gap-3"
         >
-          <AlertTriangle className="w-5 h-5 text-red-400" />
-          <p className="text-red-400">{error}</p>
+          <AlertTriangle className="w-5 h-5 text-enterprise-red" />
+          <p className="text-enterprise-red">{error}</p>
           <button onClick={() => setError(null)} className="ml-auto">
-            <X className="w-4 h-4 text-red-400" />
+            <X className="w-4 h-4 text-enterprise-red" />
           </button>
         </motion.div>
       )}
@@ -261,20 +267,55 @@ export default function Leads() {
       {/* Filters */}
       <div className="flex items-center gap-4 flex-wrap">
         <div className="flex-1 min-w-[200px] relative">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-xen-dark-500" />
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder="Search leads..."
-            className="w-full pl-10 pr-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+            className="input pl-10"
           />
         </div>
+
+        {/* Delete all leads button - left of status filter */}
+        {selectedCampaign && stats.total > 0 && (
+          <Button
+            variant="ghost"
+            onClick={async () => {
+              const campaignName = campaigns.find(c => c.id === selectedCampaign)?.name || 'this campaign'
+              if (
+                !confirm(
+                  `Are you sure you want to delete ALL ${stats.total} leads in "${campaignName}"? This cannot be undone.`
+                )
+              ) {
+                return
+              }
+              try {
+                setLoading(true)
+                await leadsApi.deleteByCampaign(selectedCampaign)
+                setSuccess(`All ${stats.total} leads for "${campaignName}" have been deleted.`)
+                // Reset to first page and refresh
+                setPage(1)
+                fetchData()
+                setTimeout(() => setSuccess(null), 4000)
+              } catch (err) {
+                setError(err instanceof Error ? err.message : 'Failed to delete leads')
+              } finally {
+                setLoading(false)
+              }
+            }}
+            className="text-enterprise-red hover:text-enterprise-red/80 hover:bg-enterprise-red/10 border border-enterprise-red/30 px-3 py-2 text-xs whitespace-nowrap"
+            disabled={loading}
+          >
+            <Trash2 className="w-3 h-3 mr-1" />
+            Delete All ({stats.total})
+          </Button>
+        )}
 
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+          className="input"
         >
           <option value="all">All Status</option>
           <option value="new">New</option>
@@ -288,7 +329,7 @@ export default function Leads() {
         <select
           value={selectedCampaign || ''}
           onChange={(e) => setSelectedCampaign(e.target.value ? parseInt(e.target.value) : undefined)}
-          className="px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+          className="input"
         >
           <option value="">All Campaigns</option>
           {campaigns.map((c) => (
@@ -300,19 +341,19 @@ export default function Leads() {
       {/* Leads Table */}
       {loading && leads.length === 0 ? (
         <div className="flex items-center justify-center h-64">
-          <RefreshCw className="w-8 h-8 text-xen-red-400 animate-spin" />
+          <RefreshCw className="w-8 h-8 text-enterprise-red animate-spin" />
         </div>
       ) : filteredLeads.length === 0 ? (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass rounded-2xl p-12 border border-xen-dark-700/50 text-center"
+          className="card p-12 text-center"
         >
-          <Users className="w-16 h-16 mx-auto text-xen-dark-600 mb-4" />
-          <h3 className="text-xl font-semibold text-white mb-2">
+          <Users className="w-16 h-16 mx-auto text-gray-400 mb-4" />
+          <h3 className="text-xl font-semibold text-gray-900 mb-2">
             {leads.length === 0 ? 'No leads yet' : 'No matching leads'}
           </h3>
-          <p className="text-xen-dark-400 mb-6">
+          <p className="text-gray-500 mb-6">
             {leads.length === 0 
               ? 'Import a CSV file or add leads manually to get started'
               : 'Try adjusting your search or filters'}
@@ -334,18 +375,18 @@ export default function Leads() {
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="glass rounded-2xl border border-xen-dark-700/50 overflow-hidden"
+          className="card overflow-hidden"
         >
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
-                <tr className="border-b border-xen-dark-700/50">
-                  <th className="text-left p-4 text-xen-dark-400 font-medium">Email</th>
-                  <th className="text-left p-4 text-xen-dark-400 font-medium">Name</th>
-                  <th className="text-left p-4 text-xen-dark-400 font-medium">Company</th>
-                  <th className="text-left p-4 text-xen-dark-400 font-medium">Status</th>
-                  <th className="text-left p-4 text-xen-dark-400 font-medium">Added</th>
-                  <th className="text-right p-4 text-xen-dark-400 font-medium">Actions</th>
+                <tr className="table-header">
+                  <th className="text-left px-6 py-4">Email</th>
+                  <th className="text-left px-6 py-4">Name</th>
+                  <th className="text-left px-6 py-4">Company</th>
+                  <th className="text-left px-6 py-4">Status</th>
+                  <th className="text-left px-6 py-4">Added</th>
+                  <th className="text-right px-6 py-4">Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -355,32 +396,32 @@ export default function Leads() {
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: index * 0.02 }}
-                    className="border-b border-xen-dark-700/30 hover:bg-xen-dark-800/30 transition-colors"
+                    className="table-row"
                   >
-                    <td className="p-4">
+                    <td className="table-cell">
                       <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-lg bg-xen-red-500/20 flex items-center justify-center">
-                          <Mail className="w-4 h-4 text-xen-red-400" />
+                        <div className="w-8 h-8 rounded-lg bg-enterprise-red/10 flex items-center justify-center">
+                          <Mail className="w-4 h-4 text-enterprise-red" />
                         </div>
-                        <span className="text-white">{lead.email}</span>
+                        <span className="text-gray-900 font-medium">{lead.email}</span>
                       </div>
                     </td>
-                    <td className="p-4 text-xen-dark-300">{lead.name || '-'}</td>
-                    <td className="p-4 text-xen-dark-300">{lead.company || '-'}</td>
-                    <td className="p-4">
-                      <span className={`px-2 py-1 rounded-lg text-xs font-medium ${statusColors[lead.status]?.bg || 'bg-gray-500/20'} ${statusColors[lead.status]?.text || 'text-gray-400'}`}>
+                    <td className="table-cell">{lead.name || '-'}</td>
+                    <td className="table-cell">{lead.company || '-'}</td>
+                    <td className="table-cell">
+                      <span className={`px-2.5 py-1 rounded-md text-xs font-medium ${statusColors[lead.status]?.bg || 'bg-gray-500/20'} ${statusColors[lead.status]?.text || 'text-gray-400'}`}>
                         {getStatusDisplayName(lead.status)}
                       </span>
                     </td>
-                    <td className="p-4 text-xen-dark-400 text-sm">
+                    <td className="table-cell text-gray-500">
                       {new Date(lead.created_at).toLocaleDateString()}
                     </td>
-                    <td className="p-4 text-right">
+                    <td className="table-cell text-right">
                       <Button
                         variant="ghost"
                         size="sm"
                         onClick={() => handleDelete(lead.id)}
-                        className="text-red-400 hover:text-red-300"
+                        className="text-enterprise-red hover:text-enterprise-red/80"
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
@@ -391,9 +432,45 @@ export default function Leads() {
             </table>
           </div>
           
-          <div className="p-4 border-t border-xen-dark-700/50 text-sm text-xen-dark-400">
-            Showing {filteredLeads.length} of {leads.length} leads
-            {stats.total > leads.length && ` (${stats.total} total${selectedCampaign ? ' in this campaign' : ''})`}
+          <div className="p-4 border-t border-gray-200 text-sm text-gray-600 flex items-center justify-between gap-4">
+            <div>
+              Showing {filteredLeads.length} of {totalLeads} leads
+              {stats.total > totalLeads && ` (${stats.total} total${selectedCampaign ? ' in this campaign' : ''})`}
+              {totalPages > 1 && ` • Page ${page} of ${totalPages}`}
+            </div>
+            {totalPages > 1 && (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                >
+                  Prev
+                </Button>
+                {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setPage(p)}
+                    className={`px-2 py-1 rounded-lg text-xs font-medium ${
+                      p === page
+                        ? 'bg-enterprise-red text-white'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    {p}
+                  </button>
+                ))}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page === totalPages}
+                >
+                  Next
+                </Button>
+              </div>
+            )}
           </div>
         </motion.div>
       )}
@@ -405,29 +482,29 @@ export default function Leads() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            className="modal-overlay"
             onClick={() => setShowModal(false)}
           >
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="glass rounded-2xl p-6 border border-xen-dark-700/50 w-full max-w-md"
+              className="modal-content p-8 w-full max-w-md"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold text-white">Add Lead</h2>
+              <div className="flex items-center justify-between mb-8">
+                <h2 className="heading-2">Add Lead</h2>
                 <button
                   onClick={() => setShowModal(false)}
-                  className="p-2 rounded-lg hover:bg-xen-dark-800 transition-colors"
+                  className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
                 >
-                  <X className="w-5 h-5 text-xen-dark-400" />
+                  <X className="w-5 h-5 text-gray-500" />
                 </button>
               </div>
 
-              <form onSubmit={handleSubmit} className="space-y-4">
+              <form onSubmit={handleSubmit} className="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2.5">
                     Email *
                   </label>
                   <input
@@ -435,72 +512,72 @@ export default function Leads() {
                     required
                     value={formData.email}
                     onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-                    className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                    className="input"
                     placeholder="email@example.com"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2.5">
                     Name
                   </label>
                   <input
                     type="text"
                     value={formData.name}
                     onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                    className="input"
                     placeholder="John Smith"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Company
                   </label>
                   <input
                     type="text"
                     value={formData.company}
                     onChange={(e) => setFormData({ ...formData, company: e.target.value })}
-                    className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                    className="input"
                     placeholder="Acme Corp"
                   />
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
                       Industry
                     </label>
                     <input
                       type="text"
                       value={formData.industry}
                       onChange={(e) => setFormData({ ...formData, industry: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                      className="input"
                       placeholder="Technology"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
                       Title
                     </label>
                     <input
                       type="text"
                       value={formData.title}
                       onChange={(e) => setFormData({ ...formData, title: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                      className="input"
                       placeholder="CEO"
                     />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Campaign (optional)
                   </label>
                   <select
                     value={formData.campaign_id || ''}
                     onChange={(e) => setFormData({ ...formData, campaign_id: e.target.value ? parseInt(e.target.value) : undefined })}
-                    className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                    className="input"
                   >
                     <option value="">No campaign</option>
                     {campaigns.map((c) => (
@@ -542,45 +619,45 @@ export default function Leads() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            className="modal-overlay"
             onClick={() => setShowImportModal(false)}
           >
             <motion.div
               initial={{ opacity: 0, scale: 0.95, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="glass rounded-2xl p-6 border border-xen-dark-700/50 w-full max-w-md"
+              className="modal-content p-8 w-full max-w-md"
               onClick={(e) => e.stopPropagation()}
             >
-              <div className="flex items-center justify-between mb-6">
-                <h2 className="text-xl font-semibold text-white">Import Leads from CSV</h2>
+              <div className="flex items-center justify-between mb-8">
+                <h2 className="heading-2">Import Leads from CSV</h2>
                 <button
                   onClick={() => setShowImportModal(false)}
-                  className="p-2 rounded-lg hover:bg-xen-dark-800 transition-colors"
+                  className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
                 >
-                  <X className="w-5 h-5 text-xen-dark-400" />
+                  <X className="w-5 h-5 text-gray-500" />
                 </button>
               </div>
 
               <div className="space-y-4">
-                <div className="p-4 rounded-xl bg-xen-dark-800/50 border border-xen-dark-700">
-                  <h4 className="text-sm font-medium text-xen-dark-300 mb-2">CSV Format</h4>
-                  <p className="text-xs text-xen-dark-400 mb-2">
+                <div className="p-4 rounded-xl bg-gray-50 border border-gray-200">
+                  <h4 className="text-sm font-medium text-gray-700 mb-2">CSV Format</h4>
+                  <p className="text-xs text-gray-600 mb-2">
                     Your CSV should have these columns:
                   </p>
-                  <code className="text-xs text-xen-red-400 block">
+                  <code className="text-xs text-enterprise-red block">
                     email,name,company,industry,title
                   </code>
                 </div>
 
                 <div>
-                  <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Assign to Campaign (optional)
                   </label>
                   <select
                     value={selectedCampaign || ''}
                     onChange={(e) => setSelectedCampaign(e.target.value ? parseInt(e.target.value) : undefined)}
-                    className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                    className="input"
                   >
                     <option value="">No campaign</option>
                     {campaigns.map((c) => (

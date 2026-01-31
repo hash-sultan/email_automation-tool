@@ -8,16 +8,16 @@ interface BadgeProps {
 }
 
 const variants = {
-  success: 'bg-green-500/20 text-green-400 border-green-500/30',
-  warning: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
-  error: 'bg-red-500/20 text-red-400 border-red-500/30',
-  info: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
-  default: 'bg-xen-dark-700/50 text-xen-dark-300 border-xen-dark-600/50',
+  success: 'bg-green-50 text-green-700 border-green-200',
+  warning: 'bg-yellow-50 text-yellow-700 border-yellow-200',
+  error: 'bg-enterprise-red/10 text-enterprise-red border-enterprise-red/30',
+  info: 'bg-gray-100 text-gray-700 border-gray-300',
+  default: 'bg-gray-50 text-gray-700 border-gray-200',
 }
 
 const sizes = {
   sm: 'px-2 py-0.5 text-xs',
-  md: 'px-3 py-1 text-sm',
+  md: 'px-2.5 py-1 text-sm',
 }
 
 export default function Badge({
@@ -29,7 +29,7 @@ export default function Badge({
   return (
     <span
       className={clsx(
-        'inline-flex items-center gap-1.5 font-medium rounded-full border',
+        'inline-flex items-center gap-1.5 font-medium rounded-md border',
         variants[variant],
         sizes[size]
       )}
@@ -39,21 +39,21 @@ export default function Badge({
           <span
             className={clsx(
               'animate-ping absolute inline-flex h-full w-full rounded-full opacity-75',
-              variant === 'success' && 'bg-green-400',
-              variant === 'warning' && 'bg-yellow-400',
-              variant === 'error' && 'bg-red-400',
-              variant === 'info' && 'bg-blue-400',
-              variant === 'default' && 'bg-xen-dark-400'
+              variant === 'success' && 'bg-green-600',
+              variant === 'warning' && 'bg-yellow-600',
+              variant === 'error' && 'bg-enterprise-red',
+              variant === 'info' && 'bg-gray-600',
+              variant === 'default' && 'bg-gray-600'
             )}
           />
           <span
             className={clsx(
               'relative inline-flex rounded-full h-2 w-2',
-              variant === 'success' && 'bg-green-400',
-              variant === 'warning' && 'bg-yellow-400',
-              variant === 'error' && 'bg-red-400',
-              variant === 'info' && 'bg-blue-400',
-              variant === 'default' && 'bg-xen-dark-400'
+              variant === 'success' && 'bg-green-600',
+              variant === 'warning' && 'bg-yellow-600',
+              variant === 'error' && 'bg-enterprise-red',
+              variant === 'info' && 'bg-gray-600',
+              variant === 'default' && 'bg-gray-600'
             )}
           />
         </span>
@@ -62,4 +62,3 @@ export default function Badge({
     </span>
   )
 }
-

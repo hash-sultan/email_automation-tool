@@ -168,19 +168,19 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
         initial={{ opacity: 0, scale: 0.95, y: 20 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.95, y: 20 }}
-        className="glass rounded-2xl border border-xen-dark-700/50 w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
+        className="card w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
       >
         {/* Header */}
-        <div className="p-6 border-b border-xen-dark-700/50 flex items-center justify-between">
+        <div className="p-6 border-b border-gray-200 flex items-center justify-between">
           <div>
-            <h2 className="text-xl font-semibold text-white">Follow-up Templates</h2>
-            <p className="text-sm text-xen-dark-400 mt-1">Manage follow-up emails for: {campaignName}</p>
+            <h2 className="text-xl font-semibold text-gray-900">Follow-up Templates</h2>
+            <p className="text-sm text-gray-500 mt-1">Manage follow-up emails for: {campaignName}</p>
           </div>
           <button
             onClick={onClose}
-            className="p-2 rounded-lg hover:bg-xen-dark-800 transition-colors"
+            className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
           >
-            <X className="w-5 h-5 text-xen-dark-400" />
+            <X className="w-5 h-5 text-gray-500" />
           </button>
         </div>
 
@@ -190,12 +190,12 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
             <motion.div
               initial={{ opacity: 0, y: -10 }}
               animate={{ opacity: 1, y: 0 }}
-              className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 flex items-center gap-3 mb-4"
+              className="p-3 rounded-xl bg-enterprise-red/10 border border-enterprise-red/30 flex items-center gap-3 mb-4"
             >
-              <AlertTriangle className="w-5 h-5 text-red-400" />
-              <p className="text-red-400 text-sm">{error}</p>
+              <AlertTriangle className="w-5 h-5 text-enterprise-red" />
+              <p className="text-enterprise-red text-sm">{error}</p>
               <button onClick={() => setError(null)} className="ml-auto">
-                <X className="w-4 h-4 text-red-400" />
+                <X className="w-4 h-4 text-enterprise-red" />
               </button>
             </motion.div>
           )}
@@ -218,23 +218,23 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-6">
           {/* Placeholders Info */}
-          <div className="p-4 rounded-xl bg-xen-dark-800/50 border border-xen-dark-700/50 mb-4">
-            <h3 className="text-sm font-medium text-xen-dark-300 mb-2">Available Placeholders</h3>
+          <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 mb-4">
+            <h3 className="text-sm font-medium text-gray-700 mb-2">Available Placeholders</h3>
             <div className="flex flex-wrap gap-2">
               {['{{name}}', '{{first_name}}', '{{last_name}}', '{{company}}', '{{industry}}', '{{title}}'].map((placeholder) => (
-                <code key={placeholder} className="px-2 py-1 rounded bg-xen-dark-700 text-xen-red-400 text-xs">
+                <code key={placeholder} className="px-2 py-1 rounded bg-gray-200 text-enterprise-red text-xs">
                   {placeholder}
                 </code>
               ))}
             </div>
-            <p className="text-xs text-xen-dark-500 mt-2">
+            <p className="text-xs text-gray-500 mt-2">
               💡 Use "Re: " prefix in subject to reply in thread
             </p>
           </div>
 
           {/* Action Bar */}
           <div className="flex items-center justify-between mb-4">
-            <p className="text-sm text-xen-dark-400">
+            <p className="text-sm text-gray-600">
               {templates.length} follow-up template{templates.length !== 1 ? 's' : ''} configured
             </p>
             <Button onClick={handleNewTemplate} size="sm">
@@ -246,13 +246,13 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
           {/* Templates List */}
           {loading ? (
             <div className="flex items-center justify-center h-32">
-              <RefreshCw className="w-8 h-8 text-xen-red-400 animate-spin" />
+              <RefreshCw className="w-8 h-8 text-enterprise-red animate-spin" />
             </div>
           ) : templates.length === 0 ? (
             <div className="text-center py-12">
-              <Mail className="w-16 h-16 mx-auto text-xen-dark-600 mb-4" />
-              <h3 className="text-lg font-semibold text-white mb-2">No follow-up templates</h3>
-              <p className="text-xen-dark-400 mb-6">
+              <Mail className="w-16 h-16 mx-auto text-gray-400 mb-4" />
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">No follow-up templates</h3>
+              <p className="text-gray-500 mb-6">
                 Create your first follow-up template to automatically send follow-up emails
               </p>
               <Button onClick={handleNewTemplate}>
@@ -267,13 +267,13 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                   key={template.id}
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="glass rounded-xl p-4 border border-xen-dark-700/50 hover:border-xen-dark-600/50 transition-colors"
+                  className="card p-4 hover:shadow-md transition-all"
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-2">
                         <Badge variant="info">Step {template.step}</Badge>
-                        <div className="flex items-center gap-2 text-xs text-xen-dark-400">
+                        <div className="flex items-center gap-2 text-xs text-gray-600">
                           <Clock className="w-3 h-3" />
                           <span>
                             {template.delay_days} day{template.delay_days !== 1 ? 's' : ''}
@@ -287,8 +287,8 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                           <Badge variant="warning" size="sm">Inactive</Badge>
                         )}
                       </div>
-                      <h4 className="font-medium text-white mb-1">{template.subject}</h4>
-                      <p className="text-sm text-xen-dark-400 line-clamp-2">
+                      <h4 className="font-medium text-gray-900 mb-1">{template.subject}</h4>
+                      <p className="text-sm text-gray-600 line-clamp-2">
                         {generatePlainText(template.body_html)}
                       </p>
                     </div>
@@ -304,7 +304,7 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                         variant="ghost"
                         size="sm"
                         onClick={() => handleDelete(template.id)}
-                        className="text-red-400 hover:text-red-300"
+                        className="text-enterprise-red hover:text-enterprise-red/80"
                       >
                         <Trash2 className="w-4 h-4" />
                       </Button>
@@ -330,25 +330,25 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                 initial={{ opacity: 0, scale: 0.95, y: 20 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.95, y: 20 }}
-                className="glass rounded-2xl p-6 border border-xen-dark-700/50 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+                className="card p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-lg font-semibold text-white">
+                  <h3 className="text-lg font-semibold text-gray-900">
                     {editingId ? 'Edit Follow-up Template' : 'Create Follow-up Template'}
                   </h3>
                   <button
                     onClick={() => setShowModal(false)}
-                    className="p-2 rounded-lg hover:bg-xen-dark-800 transition-colors"
+                    className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
                   >
-                    <X className="w-5 h-5 text-xen-dark-400" />
+                    <X className="w-5 h-5 text-gray-500" />
                   </button>
                 </div>
 
                 <form onSubmit={handleSubmit} className="space-y-4">
                   <div className="grid grid-cols-3 gap-4">
                     <div>
-                      <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
                         Step Number *
                       </label>
                       <input
@@ -358,11 +358,11 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                         max={10}
                         value={formData.step}
                         onChange={(e) => setFormData({ ...formData, step: parseInt(e.target.value) })}
-                        className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                        className="input"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
                         Delay (Days) *
                       </label>
                       <input
@@ -372,11 +372,11 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                         max={14}
                         value={formData.delay_days}
                         onChange={(e) => setFormData({ ...formData, delay_days: parseInt(e.target.value) })}
-                        className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                        className="input"
                       />
                     </div>
                     <div>
-                      <label className="block text-sm font-medium text-xen-dark-300 mb-2">
+                      <label className="block text-sm font-medium text-gray-700 mb-2">
                         Delay (Hours)
                       </label>
                       <input
@@ -385,7 +385,7 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                         max={23}
                         value={formData.delay_hours}
                         onChange={(e) => setFormData({ ...formData, delay_hours: parseInt(e.target.value) })}
-                        className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white focus:outline-none focus:border-xen-red-500"
+                        className="input"
                       />
                     </div>
                   </div>
@@ -399,10 +399,10 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                       required
                       value={formData.subject}
                       onChange={(e) => setFormData({ ...formData, subject: e.target.value })}
-                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500"
+                      className="input"
                       placeholder="e.g., Re: Quick question about {{company}}"
                     />
-                    <p className="text-xs text-xen-dark-500 mt-1">
+                    <p className="text-xs text-gray-500 mt-1">
                       Use "Re: " prefix to reply in the same email thread
                     </p>
                   </div>
@@ -422,10 +422,10 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                         })
                       }}
                       rows={8}
-                      className="w-full px-4 py-3 rounded-xl bg-xen-dark-800 border border-xen-dark-700 text-white placeholder-xen-dark-500 focus:outline-none focus:border-xen-red-500 font-mono text-sm"
+                      className="input font-mono text-sm"
                       placeholder="<p>Hi {{name}},</p><p>Just following up on my previous email...</p>"
                     />
-                    <p className="text-xs text-xen-dark-500 mt-1">
+                    <p className="text-xs text-gray-500 mt-1">
                       Use HTML tags for formatting. Placeholders like {'{{name}}'} will be replaced.
                     </p>
                   </div>
@@ -436,18 +436,18 @@ export default function FollowUpTemplates({ campaignId, campaignName, onClose }:
                         type="checkbox"
                         checked={formData.reply_to_thread}
                         onChange={(e) => setFormData({ ...formData, reply_to_thread: e.target.checked })}
-                        className="rounded border-xen-dark-700 bg-xen-dark-800 text-xen-red-500 focus:ring-xen-red-500"
+                        className="rounded border-gray-300 text-enterprise-red focus:ring-enterprise-red"
                       />
-                      <span className="text-sm text-xen-dark-300">Reply in same thread</span>
+                      <span className="text-sm text-gray-700">Reply in same thread</span>
                     </label>
                     <label className="flex items-center gap-2 cursor-pointer">
                       <input
                         type="checkbox"
                         checked={formData.is_active}
                         onChange={(e) => setFormData({ ...formData, is_active: e.target.checked })}
-                        className="rounded border-xen-dark-700 bg-xen-dark-800 text-xen-red-500 focus:ring-xen-red-500"
+                        className="rounded border-gray-300 text-enterprise-red focus:ring-enterprise-red"
                       />
-                      <span className="text-sm text-xen-dark-300">Active</span>
+                      <span className="text-sm text-gray-700">Active</span>
                     </label>
                   </div>
 

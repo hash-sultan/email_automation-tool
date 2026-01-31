@@ -2,6 +2,7 @@
 XenFlow Mailer - Campaigns API
 """
 
+from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -22,6 +23,31 @@ from sqlalchemy import func
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+def _pause_all_other_active_campaigns(db: Session, except_campaign_id: int) -> int:
+    """
+    Pause all campaigns that are currently ACTIVE except the given one.
+    Ensures only one campaign runs at a time (initial sends or follow-ups), avoiding queue pile-up.
+    Returns the number of campaigns paused.
+    """
+    others = (
+        db.query(Campaign)
+        .filter(
+            Campaign.id != except_campaign_id,
+            Campaign.status == CampaignStatus.ACTIVE,
+        )
+        .all()
+    )
+    for c in others:
+        c.status = CampaignStatus.PAUSED
+        logger.info(
+            "Paused other campaign (single-campaign-at-a-time)",
+            extra={"campaign_id": c.id, "campaign_name": c.name, "except_id": except_campaign_id},
+        )
+    if others:
+        db.commit()
+    return len(others)
 
 
 @router.get("/", response_model=CampaignListResponse)
@@ -379,7 +405,7 @@ def delete_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{campaign_id}/start")
 def start_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    """Start a campaign."""
+    """Start a campaign. Pauses all other active campaigns so only one runs at a time; then sets this one ACTIVE."""
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -392,7 +418,32 @@ def start_campaign(campaign_id: int, db: Session = Depends(get_db)):
     if not is_safe:
         raise HTTPException(status_code=400, detail=f"Cannot start: {reason}")
     
-    # Queue start task
+    # Single campaign at a time: pause any other ACTIVE campaign before starting this one
+    paused_count = _pause_all_other_active_campaigns(db, except_campaign_id=campaign_id)
+    if paused_count > 0:
+        for c in db.query(Campaign).filter(Campaign.id != campaign_id, Campaign.status == CampaignStatus.PAUSED).all():
+            if c.id in [o.id for o in (db.query(Campaign).filter(Campaign.id != campaign_id).all())]:
+                pass
+            pause_campaign_followups_task.delay(c.id)
+        # Re-query: we may have just paused others; ensure we're not refreshing a stale campaign
+        db.refresh(campaign)
+    
+    # Set ACTIVE and started_at synchronously so refetch shows started immediately
+    campaign.status = CampaignStatus.ACTIVE
+    campaign.started_at = campaign.started_at or datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(campaign)
+    
+    # Mark leads QUEUED immediately so when the worker runs it can pick them without delay
+    updated = db.query(Lead).filter(
+        Lead.campaign_id == campaign_id,
+        Lead.status == LeadStatus.NEW
+    ).update({Lead.status: LeadStatus.QUEUED})
+    if updated:
+        db.commit()
+        logger.info("Start campaign: marked leads QUEUED", extra={"campaign_id": campaign_id, "leads_updated": updated})
+    
+    # Worker will trigger first send batch (if queue is busy with other campaigns, this may run after a delay)
     start_campaign_task.delay(campaign_id)
     
     return {"status": "starting", "campaign_id": campaign_id}
@@ -400,7 +451,7 @@ def start_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{campaign_id}/pause")
 def pause_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    """Pause a campaign."""
+    """Pause a campaign. Only an explicit Pause request (e.g. Pause button) sets status to PAUSED."""
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -408,10 +459,14 @@ def pause_campaign(campaign_id: int, db: Session = Depends(get_db)):
     if campaign.status != CampaignStatus.ACTIVE:
         raise HTTPException(status_code=400, detail="Campaign is not active")
     
-    # Update status immediately (synchronous)
+    # Update status immediately (synchronous) – this is why sending stops
     campaign.status = CampaignStatus.PAUSED
     db.commit()
     db.refresh(campaign)
+    logger.info(
+        "Campaign paused via API (sending will stop)",
+        extra={"campaign_id": campaign_id, "campaign_name": campaign.name},
+    )
     
     # Queue background tasks for cleanup (follow-ups, etc.)
     pause_campaign_followups_task.delay(campaign_id)
@@ -424,13 +479,16 @@ def pause_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{campaign_id}/resume")
 def resume_campaign(campaign_id: int, db: Session = Depends(get_db)):
-    """Resume a paused campaign."""
+    """Resume a paused campaign. Pauses all other active campaigns so only one runs at a time."""
     campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     
     if campaign.status != CampaignStatus.PAUSED:
         raise HTTPException(status_code=400, detail="Campaign is not paused")
+    
+    # Ensure only one campaign is active: pause any others first
+    _pause_all_other_active_campaigns(db, except_campaign_id=campaign_id)
     
     # Update status immediately (synchronous)
     campaign.status = CampaignStatus.ACTIVE
@@ -451,7 +509,7 @@ def resume_campaign(campaign_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{campaign_id}/trigger-followups")
 def trigger_followups(campaign_id: int, db: Session = Depends(get_db)):
-    """Manually trigger follow-up processing for a campaign."""
+    """Manually trigger follow-up processing for a campaign. Pauses other active campaigns so only one runs at a time."""
     from datetime import datetime
     from sqlalchemy import and_
     from app.models.lead import Lead, LeadStatus
@@ -460,11 +518,16 @@ def trigger_followups(campaign_id: int, db: Session = Depends(get_db)):
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     
-    if campaign.status != CampaignStatus.ACTIVE:
-        raise HTTPException(status_code=400, detail="Campaign must be active to trigger follow-ups")
-    
     if not campaign.followup_enabled:
         raise HTTPException(status_code=400, detail="Follow-ups are not enabled for this campaign")
+    
+    # Ensure only one campaign runs at a time: pause any other active campaigns
+    _pause_all_other_active_campaigns(db, except_campaign_id=campaign_id)
+    # Make this campaign active so it's the single "running" campaign (initial or follow-ups)
+    if campaign.status != CampaignStatus.ACTIVE:
+        campaign.status = CampaignStatus.ACTIVE
+        db.commit()
+        db.refresh(campaign)
     
     # When manually triggering, update next_followup_at to now for eligible leads
     # This allows immediate processing regardless of scheduled time
