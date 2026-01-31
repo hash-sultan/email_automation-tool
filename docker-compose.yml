@@ -80,7 +80,7 @@ services:
       dockerfile: Dockerfile
     container_name: xenflow_worker
     restart: unless-stopped
-    command: celery -A app.workers.celery_app worker --loglevel=info --queues=emails,followups,default -c 2
+    command: celery -A app.workers.celery_app worker --loglevel=info --queues=control,emails,followups,default -c 2
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-xenflow}:${POSTGRES_PASSWORD:-xenflow_secret_2024}@db:5432/${POSTGRES_DB:-xenflow}
       - REDIS_URL=redis://redis:6379/0

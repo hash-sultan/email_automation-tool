@@ -47,8 +47,11 @@ celery_app.conf.update(
     # Rate limiting (per worker)
     worker_concurrency=2,  # Conservative for email sending
     
-    # Task routes
+    # Task routes: control (start/bulk/wake) first so new campaigns don't wait behind send backlog
     task_routes={
+        "app.workers.email_worker.start_campaign_task": {"queue": "control"},
+        "app.workers.email_worker.send_bulk_emails_task": {"queue": "control"},
+        "app.workers.email_worker.wake_active_campaigns_task": {"queue": "control"},
         "app.workers.email_worker.*": {"queue": "emails"},
         "app.workers.followup_worker.*": {"queue": "followups"},
         "app.workers.imap_worker.*": {"queue": "imap"},
@@ -83,6 +86,12 @@ celery_app.conf.update(
             "task": "app.workers.warmup_worker.reset_hourly_counters_task",
             "schedule": crontab(minute=0),
             "options": {"queue": "default"}
+        },
+        # Safety net: wake active campaigns that still have leads (in case scheduled next-batch was lost)
+        "wake-active-campaigns": {
+            "task": "app.workers.email_worker.wake_active_campaigns_task",
+            "schedule": crontab(minute="*/2"),  # every 2 minutes
+            "options": {"queue": "control"}
         },
     }
 )
