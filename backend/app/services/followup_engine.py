@@ -3,7 +3,7 @@ XenFlow Mailer - Follow-up Engine
 Automated follow-up scheduling and execution
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
@@ -37,45 +37,37 @@ class FollowUpEngine:
         self.db = db
     
     def get_leads_ready_for_followup(
-        self, 
+        self,
         campaign_id: int = None,
-        limit: int = 100
+        limit: int = 100,
+        allow_paused_campaign: bool = False,
     ) -> List[Lead]:
         """
         Get leads that are ready for their next follow-up.
-        
+
         Criteria:
         - Lead is contactable (not replied, bounced, unsubscribed)
-        - Campaign is active with follow-ups enabled
-        - next_followup_at is in the past
-        - Current time is within send window
+        - Campaign has follow-ups enabled (and is ACTIVE unless allow_paused_campaign)
+        - next_followup_at is in the past (timezone-aware comparison)
         """
-        now = datetime.utcnow()
-        
-        query = self.db.query(Lead).join(Campaign).filter(
-            and_(
-                # Lead is contactable
-                Lead.replied == False,
-                Lead.bounced == False,
-                Lead.unsubscribed == False,
-                Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED]),
-                
-                # Follow-up is due
-                Lead.next_followup_at.isnot(None),
-                Lead.next_followup_at <= now,
-                
-                # Campaign is active with follow-ups
-                Campaign.status == CampaignStatus.ACTIVE,
-                Campaign.followup_enabled == True,
-                
-                # Lead hasn't exceeded max steps
-                Lead.step < Campaign.max_followup_steps
-            )
-        )
-        
+        now = datetime.now(timezone.utc)
+        conditions = [
+            Lead.replied == False,
+            Lead.bounced == False,
+            Lead.unsubscribed == False,
+            Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED]),
+            Lead.next_followup_at.isnot(None),
+            Lead.next_followup_at <= now,
+            Campaign.followup_enabled == True,
+            Lead.step < Campaign.max_followup_steps,
+        ]
+        if not allow_paused_campaign:
+            conditions.append(Campaign.status == CampaignStatus.ACTIVE)
+
+        query = self.db.query(Lead).join(Campaign).filter(and_(*conditions))
         if campaign_id:
             query = query.filter(Lead.campaign_id == campaign_id)
-        
+
         return query.order_by(Lead.next_followup_at.asc()).limit(limit).all()
     
     def schedule_next_followup(self, lead: Lead, campaign: Campaign) -> Optional[datetime]:
@@ -97,24 +89,35 @@ class FollowUpEngine:
             lead.next_followup_at = None
             return None
         
-        # Get follow-up template for next step
-        followup_template = None
-        for template in campaign.followup_templates:
-            if template.step == next_step and template.is_active:
-                followup_template = template
-                break
-        
-        if not followup_template:
-            logger.debug(f"No follow-up template for step {next_step}")
-            lead.next_followup_at = None
-            return None
-        
-        # Calculate next follow-up time
-        base_time = lead.last_sent_at or datetime.utcnow()
-        delay_delta = timedelta(
-            days=followup_template.delay_days,
-            hours=followup_template.delay_hours
-        )
+        # Determine delay for next follow-up.
+        # For legacy per-campaign follow-up templates, use the template's delay.
+        # For category-based campaigns, use the campaign-level followup_delay_days.
+        delay_days: int
+        delay_hours: int
+
+        if getattr(campaign, "template_category", None):
+            # Category-based campaigns: single configurable delay for all follow-ups
+            delay_days = campaign.followup_delay_days
+            delay_hours = 0
+        else:
+            # Legacy campaigns: require a FollowUpTemplate for the next step
+            followup_template = None
+            for template in campaign.followup_templates:
+                if template.step == next_step and template.is_active:
+                    followup_template = template
+                    break
+
+            if not followup_template:
+                logger.debug(f"No follow-up template for step {next_step}")
+                lead.next_followup_at = None
+                return None
+
+            delay_days = followup_template.delay_days
+            delay_hours = followup_template.delay_hours
+
+        # Calculate next follow-up time (use timezone-aware now for consistency)
+        base_time = lead.last_sent_at or datetime.now(timezone.utc)
+        delay_delta = timedelta(days=delay_days, hours=delay_hours)
         
         next_followup = base_time + delay_delta
         
@@ -244,7 +247,7 @@ class FollowUpEngine:
         """
         Get statistics about the follow-up queue.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         base_query = self.db.query(Lead).filter(
             Lead.next_followup_at.isnot(None)
@@ -285,7 +288,7 @@ class FollowUpEngine:
         }
     
     def get_pending_followups(
-        self, 
+        self,
         campaign_id: int = None,
         hours_ahead: int = 24,
         limit: int = 100
@@ -293,7 +296,7 @@ class FollowUpEngine:
         """
         Get list of pending follow-ups for preview.
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         
         query = self.db.query(Lead).filter(
             and_(
