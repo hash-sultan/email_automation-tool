@@ -52,10 +52,10 @@ const CampaignCard = ({
     ? ((campaign.replies_count / campaign.emails_sent) * 100).toFixed(1)
     : '0.0'
   const leadsContacted = campaign.leads_contacted ?? campaign.emails_sent
-  // Enable trigger follow-ups only when all leads have been contacted
-  const canTriggerFollowups = campaign.status === 'active' && 
-    campaign.followup_enabled && 
-    leadsContacted === campaign.total_leads && 
+  // Enable trigger follow-ups when all leads contacted (works for active or paused campaigns)
+  const canTriggerFollowups = (campaign.status === 'active' || campaign.status === 'paused') &&
+    campaign.followup_enabled &&
+    leadsContacted === campaign.total_leads &&
     campaign.total_leads > 0
 
   return (
