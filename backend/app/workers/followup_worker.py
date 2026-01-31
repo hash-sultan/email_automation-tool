@@ -34,22 +34,49 @@ def process_followups_task(self, campaign_id: int = None, limit: int = 100):
     with get_db_context() as db:
         followup_engine = FollowUpEngine(db)
         
-        # Get leads ready for follow-up
+        # When campaign_id is set (manual trigger), include leads even if campaign is PAUSED
+        allow_paused = campaign_id is not None
         leads = followup_engine.get_leads_ready_for_followup(
             campaign_id=campaign_id,
-            limit=limit
+            limit=limit,
+            allow_paused_campaign=allow_paused,
         )
         
         if not leads:
             return {"status": "complete", "processed": 0}
         
         queued = 0
+        skipped = 0
         rate_limiter = RateLimiter()
         
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         
         for lead in leads:
+            next_step = lead.step + 1
+            
+            # Check if there's already a pending email for this lead/step
+            from app.models.email_log import EmailLog, EmailStatus
+            pending_email = db.query(EmailLog).filter(
+                EmailLog.lead_id == lead.id,
+                EmailLog.campaign_id == lead.campaign_id,
+                EmailLog.followup_step == next_step,
+                EmailLog.status.in_([EmailStatus.QUEUED, EmailStatus.SENDING])
+            ).first()
+            
+            if pending_email:
+                logger.debug(
+                    f"Skipping follow-up for lead {lead.email} step {next_step} - already has pending email (log_id: {pending_email.id})",
+                    extra={
+                        "lead_id": lead.id,
+                        "campaign_id": lead.campaign_id,
+                        "followup_step": next_step,
+                        "pending_log_id": pending_email.id
+                    }
+                )
+                skipped += 1
+                continue
+            
             # Get the last email sent to find in_reply_to
             last_email = db.query(EmailLog).filter(
                 EmailLog.lead_id == lead.id
@@ -71,7 +98,7 @@ def process_followups_task(self, campaign_id: int = None, limit: int = 100):
                 args=[
                     lead.id,
                     lead.campaign_id,
-                    lead.step + 1,  # Next step
+                    next_step,
                     in_reply_to,
                     references
                 ],
@@ -82,9 +109,15 @@ def process_followups_task(self, campaign_id: int = None, limit: int = 100):
         
         loop.close()
         
-        logger.info(f"Queued {queued} follow-ups")
+        logger.info(
+            f"Queued {queued} follow-ups (skipped {skipped} duplicates)",
+            extra={
+                "queued": queued,
+                "skipped": skipped
+            }
+        )
         
-        return {"status": "processed", "queued": queued}
+        return {"status": "processed", "queued": queued, "skipped": skipped}
 
 
 @celery_app.task(name="app.workers.followup_worker.schedule_followup_task")

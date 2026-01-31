@@ -185,15 +185,24 @@ def send_bulk_emails_task(
         if not campaign or campaign.status != CampaignStatus.ACTIVE:
             return {"status": "skipped", "message": "Campaign not active"}
         
-        # Get leads to contact - only those that haven't been contacted yet
-        # (status is QUEUED or NEW, and no email has been sent yet)
+        # Exclude leads that already have a pending initial email (QUEUED or SENDING)
+        # so we only select leads we can actually queue and make progress
+        from app.models.email_log import EmailLog, EmailStatus
+        leads_with_pending = db.query(EmailLog.lead_id).filter(
+            EmailLog.campaign_id == campaign_id,
+            EmailLog.followup_step == 0,
+            EmailLog.status.in_([EmailStatus.QUEUED, EmailStatus.SENDING])
+        ).subquery()
+        
+        # Get leads to contact - only those that haven't been contacted yet and have no pending email
         leads = db.query(Lead).filter(
             Lead.campaign_id == campaign_id,
             Lead.status.in_([LeadStatus.QUEUED, LeadStatus.NEW]),
             Lead.replied == False,
             Lead.bounced == False,
             Lead.unsubscribed == False,
-            Lead.last_sent_at.is_(None)  # Only leads that haven't received initial email
+            Lead.last_sent_at.is_(None),
+            ~Lead.id.in_(db.query(leads_with_pending.c.lead_id))
         ).limit(limit).all()
         
         if not leads:
@@ -203,8 +212,6 @@ def send_bulk_emails_task(
             if campaign.status == CampaignStatus.ACTIVE:
                 # Double-check if there are any leads that might have been missed
                 # (e.g., leads that were just added or status changed)
-                # Exclude leads that have pending emails
-                from app.models.email_log import EmailLog, EmailStatus
                 leads_with_pending = db.query(EmailLog.lead_id).filter(
                     EmailLog.campaign_id == campaign_id,
                     EmailLog.followup_step == 0,
@@ -235,10 +242,7 @@ def send_bulk_emails_task(
             
             return {"status": "complete", "message": "No leads to contact"}
         
-        # Check for pending emails to avoid duplicate queuing
-        from app.models.email_log import EmailLog, EmailStatus
-        
-        # Queue individual send tasks
+        # Queue individual send tasks (leads already exclude pending; inner check is extra safety)
         queued = 0
         skipped = 0
         rate_limiter = RateLimiter()
@@ -267,14 +271,8 @@ def send_bulk_emails_task(
                 skipped += 1
                 continue
             
-            # Fixed 10-second delay between emails
-            delay_seconds = 10
-            
-            # Queue with countdown (10 seconds between each email)
-            send_email_task.apply_async(
-                args=[lead.id, campaign_id, 0],
-                countdown=delay_seconds * queued  # 10 seconds * position in queue
-            )
+            # No delay: queue immediately (multiple senders handle throughput)
+            send_email_task.apply_async(args=[lead.id, campaign_id, 0])
             
             queued += 1
         
@@ -298,8 +296,6 @@ def send_bulk_emails_task(
             can_send, reason = campaign.can_send_now
             if can_send:
                 # Check if there are more leads waiting to be contacted
-                # Exclude leads that have pending emails (QUEUED or SENDING status)
-                from app.models.email_log import EmailLog, EmailStatus
                 leads_with_pending = db.query(EmailLog.lead_id).filter(
                     EmailLog.campaign_id == campaign_id,
                     EmailLog.followup_step == 0,
@@ -317,34 +313,18 @@ def send_bulk_emails_task(
                 ).count()
                 
                 if remaining_leads > 0:
-                    # Automatically continue sending after a short delay
-                    # Use a shorter delay to keep the campaign moving continuously
-                    # Delay based on how many emails were queued (to allow them to start processing)
-                    # But keep it short to maintain continuous sending
-                    if queued > 0:
-                        # If we queued emails, wait for them to start processing (10s per email, but cap at reasonable time)
-                        next_batch_delay = min(120, max(30, queued * 2))  # 30-120 seconds based on batch size
-                    else:
-                        # If no emails were queued (all skipped), check again soon
-                        next_batch_delay = 30
-                    
+                    # Schedule next batch immediately (no delay; single campaign + multiple senders)
                     logger.info(
-                        f"Campaign {campaign_id} has {remaining_leads} remaining leads, scheduling next batch in {next_batch_delay}s",
+                        f"Campaign {campaign_id} has {remaining_leads} remaining leads, scheduling next batch",
                         extra={
                             "campaign_id": campaign_id,
                             "remaining_leads": remaining_leads,
-                            "next_batch_delay": next_batch_delay,
                             "emails_today": campaign.emails_today,
                             "daily_limit": campaign.daily_limit,
                             "queued_in_batch": queued
                         }
                     )
-                    
-                    # Schedule next batch automatically
-                    send_bulk_emails_task.apply_async(
-                        args=[campaign_id, limit],
-                        countdown=next_batch_delay
-                    )
+                    send_bulk_emails_task.delay(campaign_id, limit)
                 else:
                     logger.info(
                         f"Campaign {campaign_id} has no more leads to contact",
@@ -376,7 +356,7 @@ def send_bulk_emails_task(
 @celery_app.task(name="app.workers.email_worker.start_campaign_task")
 def start_campaign_task(campaign_id: int):
     """
-    Start a campaign - activates it and begins sending.
+    After API has set campaign ACTIVE: mark NEW leads as QUEUED and trigger first send batch.
     """
     with get_db_context() as db:
         campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
@@ -384,20 +364,14 @@ def start_campaign_task(campaign_id: int):
         if not campaign:
             return {"status": "error", "message": "Campaign not found"}
         
-        if campaign.status == CampaignStatus.ACTIVE:
-            return {"status": "already_active"}
+        if campaign.status != CampaignStatus.ACTIVE:
+            return {"status": "skipped", "message": "Campaign not active"}
         
-        # Update leads to QUEUED status
+        # Update leads to QUEUED status so they are picked for sending
         db.query(Lead).filter(
             Lead.campaign_id == campaign_id,
             Lead.status == LeadStatus.NEW
         ).update({Lead.status: LeadStatus.QUEUED})
-        
-        # Activate campaign
-        campaign.status = CampaignStatus.ACTIVE
-        # Use SQLAlchemy func via model's metadata bind
-        from sqlalchemy.sql import func
-        campaign.started_at = func.now()
         
         db.commit()
         
@@ -405,6 +379,58 @@ def start_campaign_task(campaign_id: int):
         send_bulk_emails_task.delay(campaign_id)
         
         return {"status": "started", "campaign_id": campaign_id}
+
+
+@celery_app.task(name="app.workers.email_worker.wake_active_campaigns_task")
+def wake_active_campaigns_task():
+    """
+    Safety net: find ACTIVE campaigns that still have leads to contact and queue
+    send_bulk_emails_task for them. If a scheduled 'next batch' task was lost
+    (worker restart, Redis, etc.), this will wake the campaign within a few minutes.
+    """
+    from app.models.email_log import EmailStatus
+
+    with get_db_context() as db:
+        active = db.query(Campaign).filter(Campaign.status == CampaignStatus.ACTIVE).all()
+        if not active:
+            return {"status": "ok", "woken": 0}
+
+        woken = 0
+        for campaign in active:
+            can_send, _ = campaign.can_send_now
+            if not can_send:
+                continue
+            # Same logic as send_bulk_emails_task: leads not yet contacted
+            leads_with_pending = (
+                db.query(EmailLog.lead_id)
+                .filter(
+                    EmailLog.campaign_id == campaign.id,
+                    EmailLog.followup_step == 0,
+                    EmailLog.status.in_([EmailStatus.QUEUED, EmailStatus.SENDING]),
+                )
+                .subquery()
+            )
+            remaining = (
+                db.query(Lead)
+                .filter(
+                    Lead.campaign_id == campaign.id,
+                    Lead.status.in_([LeadStatus.QUEUED, LeadStatus.NEW]),
+                    Lead.replied == False,
+                    Lead.bounced == False,
+                    Lead.unsubscribed == False,
+                    Lead.last_sent_at.is_(None),
+                    ~Lead.id.in_(db.query(leads_with_pending.c.lead_id)),
+                )
+                .count()
+            )
+            if remaining > 0:
+                send_bulk_emails_task.delay(campaign.id)
+                woken += 1
+                logger.info(
+                    "Woke active campaign (safety net)",
+                    extra={"campaign_id": campaign.id, "remaining_leads": remaining},
+                )
+        return {"status": "ok", "woken": woken}
 
 
 @celery_app.task(name="app.workers.email_worker.pause_campaign_task")
