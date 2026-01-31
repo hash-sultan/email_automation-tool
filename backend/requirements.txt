@@ -41,6 +41,7 @@ httpx==0.26.0
 tenacity==8.2.3
 pytz==2024.1
 croniter==2.0.1
+beautifulsoup4==4.12.3
 
 # Logging & Monitoring
 structlog==24.1.0
