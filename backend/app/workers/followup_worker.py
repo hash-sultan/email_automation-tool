@@ -90,10 +90,7 @@ def process_followups_task(self, campaign_id: int = None, limit: int = 100):
             elif in_reply_to:
                 references = in_reply_to
             
-            # Fixed 10-second delay between follow-up emails
-            delay_seconds = 10
-            
-            # Queue follow-up send
+            # No delay: queue immediately (single campaign at a time, multiple senders)
             send_email_task.apply_async(
                 args=[
                     lead.id,
@@ -101,8 +98,7 @@ def process_followups_task(self, campaign_id: int = None, limit: int = 100):
                     next_step,
                     in_reply_to,
                     references
-                ],
-                countdown=delay_seconds * queued  # 10 seconds * position in queue
+                ]
             )
             
             queued += 1
@@ -113,7 +109,8 @@ def process_followups_task(self, campaign_id: int = None, limit: int = 100):
             f"Queued {queued} follow-ups (skipped {skipped} duplicates)",
             extra={
                 "queued": queued,
-                "skipped": skipped
+                "skipped": skipped,
+                "campaign_id": campaign_id,
             }
         )
         

@@ -529,8 +529,8 @@ def trigger_followups(campaign_id: int, db: Session = Depends(get_db)):
         db.commit()
         db.refresh(campaign)
     
-    # When manually triggering, update next_followup_at to now for eligible leads
-    # This allows immediate processing regardless of scheduled time
+    # Set next_followup_at = now for ALL contactable leads that can receive follow-ups
+    # (including those with next_followup_at NULL so they get processed)
     from datetime import timezone
     now = datetime.now(timezone.utc)
     eligible_leads = db.query(Lead).filter(
@@ -541,26 +541,21 @@ def trigger_followups(campaign_id: int, db: Session = Depends(get_db)):
             Lead.unsubscribed == False,
             Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED]),
             Lead.step < campaign.max_followup_steps,
-            Lead.next_followup_at.isnot(None)
         )
     ).all()
     
-    updated_count = 0
     for lead in eligible_leads:
-        # Compare timezone-aware datetimes
-        if lead.next_followup_at and lead.next_followup_at > now:
-            lead.next_followup_at = now
-            updated_count += 1
-    
+        lead.next_followup_at = now
+    updated_count = len(eligible_leads)
     if updated_count > 0:
         db.commit()
         logger.info(
-            f"Updated {updated_count} leads to be ready for immediate follow-up processing",
+            f"Set {updated_count} leads ready for immediate follow-up (trigger)",
             extra={"campaign_id": campaign_id, "updated_leads": updated_count}
         )
     
-    # Queue the follow-up processing task
-    task = process_followups_task.delay(campaign_id=campaign_id, limit=100)
+    # Queue follow-up processing for this campaign only (single campaign at a time)
+    task = process_followups_task.delay(campaign_id=campaign_id, limit=500)
     
     logger.info(
         f"Manually triggered follow-ups for campaign {campaign_id}",
@@ -572,7 +567,7 @@ def trigger_followups(campaign_id: int, db: Session = Depends(get_db)):
         "campaign_id": campaign_id,
         "task_id": task.id,
         "leads_updated": updated_count,
-        "message": f"Follow-up processing has been queued. {updated_count} leads updated for immediate processing."
+        "message": f"Follow-ups for this campaign only. {updated_count} leads ready; other campaigns paused. Processing queued."
     }
 
 

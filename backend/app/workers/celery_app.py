@@ -97,6 +97,16 @@ celery_app.conf.update(
 )
 
 
+# After fork, DB connections from the parent pool are invalid in the child.
+# Dispose the pool so the worker creates fresh connections (fixes "Lead or Campaign not found").
+from celery.signals import worker_process_init
+
+@worker_process_init.connect
+def _dispose_db_pool_on_fork(**kwargs):
+    from app.database import engine
+    engine.dispose()
+
+
 # Optional: Event handlers for monitoring
 @celery_app.task(bind=True)
 def debug_task(self):

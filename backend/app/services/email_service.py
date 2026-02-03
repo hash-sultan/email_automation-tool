@@ -488,28 +488,56 @@ class EmailService:
                 followup_step=followup_step,
             )
 
-            # Create email log entry
-            email_log = EmailLog(
-                campaign_id=campaign.id,
-                lead_id=lead.id,
-                sender_id=sender.id,
-                email_type=EmailType.FOLLOWUP if followup_step > 0 else EmailType.INITIAL,
-                followup_step=followup_step,
-                to_email=lead.email,
-                to_name=lead.display_name,
-                from_email=sender.email,
-                from_name=sender.name,
-                reply_to=sender.reply_to or sender.email,
-                subject=rendered_subject,
-                body_html=rendered_body_html,
-                body_plain=rendered_body_plain,
-                message_id=message.message_id,
-                in_reply_to=in_reply_to,
-                references=references,
-                status=EmailStatus.SENDING,
+            # Reuse existing QUEUED log (created by send_bulk_emails_task) or create new
+            existing_queued = (
+                self.db.query(EmailLog)
+                .filter(
+                    EmailLog.lead_id == lead.id,
+                    EmailLog.campaign_id == campaign.id,
+                    EmailLog.followup_step == followup_step,
+                    EmailLog.status == EmailStatus.QUEUED,
+                )
+                .first()
             )
-            self.db.add(email_log)
-            self.db.flush()
+            if existing_queued:
+                email_log = existing_queued
+                email_log.sender_id = sender.id
+                email_log.email_type = EmailType.FOLLOWUP if followup_step > 0 else EmailType.INITIAL
+                email_log.to_email = lead.email
+                email_log.to_name = lead.display_name
+                email_log.from_email = sender.email
+                email_log.from_name = sender.name
+                email_log.reply_to = sender.reply_to or sender.email
+                email_log.subject = rendered_subject
+                email_log.body_html = rendered_body_html
+                email_log.body_plain = rendered_body_plain
+                email_log.message_id = message.message_id
+                email_log.in_reply_to = in_reply_to
+                email_log.references = references
+                email_log.status = EmailStatus.SENDING
+                self.db.flush()
+            else:
+                email_log = EmailLog(
+                    campaign_id=campaign.id,
+                    lead_id=lead.id,
+                    sender_id=sender.id,
+                    email_type=EmailType.FOLLOWUP if followup_step > 0 else EmailType.INITIAL,
+                    followup_step=followup_step,
+                    to_email=lead.email,
+                    to_name=lead.display_name,
+                    from_email=sender.email,
+                    from_name=sender.name,
+                    reply_to=sender.reply_to or sender.email,
+                    subject=rendered_subject,
+                    body_html=rendered_body_html,
+                    body_plain=rendered_body_plain,
+                    message_id=message.message_id,
+                    in_reply_to=in_reply_to,
+                    references=references,
+                    status=EmailStatus.SENDING,
+                )
+                self.db.add(email_log)
+                self.db.flush()
 
             # Now that we know email_log.id, replace placeholder __LOG_ID__ in HTML
             if email_log.id and rendered_body_html and "__LOG_ID__" in rendered_body_html:

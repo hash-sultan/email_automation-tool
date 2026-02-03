@@ -193,9 +193,23 @@ class SMTPProvider(BaseEmailProvider):
             error_code = getattr(e, 'code', None) or getattr(e, 'smtp_code', None)
             logger.error(f"SMTP data error: {error_msg}")
             
+            # Check for "address not found" or "message blocked" errors - these are bounces, not Gmail limits
+            error_str_lower = error_msg.lower()
+            if any(keyword in error_str_lower for keyword in [
+                'address not found', 'message blocked', 'user not found', 
+                'mailbox not found', 'no such user', 'invalid recipient',
+                'recipient address rejected', '550 5.1.1', '550 5.4.1'
+            ]):
+                # These are bounces, not rate limits
+                logger.warning(f"Recipient error (bounce): {message.to_email} - {error_msg}")
+                return EmailResult(
+                    status=EmailResultStatus.BOUNCED,
+                    error_code="RECIPIENT_ERROR",
+                    error_message=error_msg
+                )
+            
             # Check for Gmail daily limit exceeded
             # Error format: (550, '5.4.5 Daily user sending limit exceeded...')
-            error_str_lower = error_msg.lower()
             if (error_code == 550 or "550" in error_msg) and (
                 "daily user sending limit exceeded" in error_str_lower or 
                 "5.4.5" in error_msg or

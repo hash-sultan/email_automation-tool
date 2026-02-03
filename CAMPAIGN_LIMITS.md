@@ -1,147 +1,108 @@
-# Campaign Limits Guide
+Email sending limits and delays (OPTIMIZED FOR SENDER ROTATION)
 
-## Overview
+1. Hourly limits
+Status: Configured but not enforced by the rate limiter
+Campaign level: Each campaign has an hourly_limit (default: 50/hour)
+Database check: The Campaign.can_send_now property checks hourly limits
+Rate limiter: The Redis rate limiter ignores hourly limits (MAX_EMAILS_PER_HOUR = 999999)
+Reset: Hourly counters reset every hour via Celery task reset_hourly_counters_task
+Current behavior:
+Campaigns track emails_this_hour, but the Redis rate limiter only enforces daily limits
+Hourly limits are checked in the campaign model but not strictly enforced by the rate limiter
 
-Each campaign has configurable rate limits that help you:
-- **Control sending speed** for warmup of new email accounts
-- **Customize per campaign** based on your sender's reputation
-- **Reach your goals** (e.g., 200/day = 1000 emails in 5 days)
+2. Adaptive delays between emails (OPTIMIZED)
+The system uses adaptive delays and batch pauses based on the number of senders in rotation:
 
-## Default Settings (New Campaigns)
+Single Sender (no rotation):
+- Minimum interval: 10 seconds between emails
+- Batch size: 50 emails before pause
+- Batch pause: 10 minutes
+- Pattern: Email 1 → Wait 10s → Email 2 → ... → Email 50 → Wait 10min → Email 51...
 
-When you create a new campaign, the defaults are:
+Two Senders (rotation):
+- Minimum interval: 7 seconds between emails (per sender)
+- Batch size: 75 emails before pause (per sender)
+- Batch pause: 7 minutes (per sender)
+- Pattern: Sender 1 sends 75 emails → pauses 7min, while Sender 2 continues sending
 
-- **Daily Limit**: 200 emails/day
-- **Hourly Limit**: 25 emails/hour
-- **Send Window**: 24/7 (00:00 - 23:59)
-- **Weekdays Only**: Disabled (sends on weekends too)
+Three+ Senders (rotation):
+- Minimum interval: 5 seconds between emails (per sender)
+- Batch size: 100 emails before pause (per sender)
+- Batch pause: 5 minutes (per sender)
+- Pattern: If Sender 1 pauses after 100 emails, Senders 2 and 3 continue independently
 
-### Why 200/day?
+Key Features:
+- Per-sender batch pause: Each sender has independent batch tracking
+- If one sender pauses, other senders in rotation continue sending
+- Adaptive settings automatically adjust based on rotation count
+- Enforcement: Redis rate limiter tracks per-sender:
+  * last_send_time — ensures adaptive minimum interval (per sender)
+  * batch_count — counts emails in current batch (per sender)
+  * batch_pause_end — timestamp when pause ends (per sender)
+3. Daily limits
+Sender daily limit: Max 500/day per sender (hard cap in SafetyLimits.ABSOLUTE_MAX_EMAILS_PER_DAY)
+Campaign daily limit: Configurable per campaign (default: 200/day)
+Warmup adjustment: If warmup is enabled, sender's current_daily_limit is adjusted based on warmup day
+Enforcement: Redis rate limiter enforces both sender and campaign daily limits
 
-- **1000 emails in 5 days**: 200 × 5 = 1000 emails
-- **Safe for warmup**: Good starting point for new email accounts
-- **Within provider limits**: Gmail free accounts allow 500/day
+With sender rotation:
+- Total daily capacity = number of senders × 500/day
+- Example: 3 senders = 1,500 emails/day potential capacity
+- Each sender independently tracks their daily limit
+Warmup feature
+How it works:
+Gradually increases sending capacity over 28+ days to protect sender reputation.
+Warmup schedule:
+Day 1-3:   10 emails/dayDay 4-7:   25 emails/dayDay 8-14:  50 emails/dayDay 15-21: 75 emails/dayDay 22-28: 100 emails/dayDay 29+:   150 emails/day (or base_daily_limit, whichever is lower)
+How warmup is applied:
+When enabled: When a sender is created/activated with warmup_enabled=True
+Start date: warmup_start_date is set to today
+Daily updates: Celery Beat task update_warmup_task runs at midnight to:
+Calculate current warmup day
+Update current_daily_limit based on schedule
+Mark warmup complete after day 29 if limit reaches base_daily_limit
+Limit usage: The sender’s current_daily_limit (not base_daily_limit) is used by the rate limiter
+Warmup states:
+warmup_enabled = True + warmup_start_date = None: Pending (not started)
+warmup_enabled = True + warmup_start_date = Date: In progress
+warmup_enabled = False: Completed or skipped
+Warmup controls:
+Start: Automatically starts when sender is activated (if enabled)
+Skip: skip_warmup_task — immediately uses base_daily_limit (use with caution)
+Reset: reset_warmup_task — restarts from day 1
+How everything works together
+Sending flow (with adaptive rotation):
+1. Email task queued → send_email_task
+2. Calculate rotation count → Number of senders in campaign rotation
+3. Rate limiter check → RateLimiter.check_rate_limit():
+   - Uses adaptive minimum interval based on rotation (5s/7s/10s)
+   - Checks per-sender batch pause (if batch size reached for that sender)
+   - Checks sender daily limit (uses current_daily_limit if warmup enabled)
+   - Checks campaign daily limit
+4. If allowed: Email sent, counters updated with adaptive batch tracking
+5. If rate limited: Task retries after calculated wait time
 
-## Campaign Limits Explained
+Example scenario (3 senders rotating):
+- Sender 1: current_daily_limit = 200, warmup Day 10
+- Sender 2: current_daily_limit = 200, warmup Day 8
+- Sender 3: current_daily_limit = 150, warmup Day 5
+- Campaign daily_limit = 500
+- Rotation count: 3
 
-### Daily Limit
-- **Range**: 1 - 500 emails/day
-- **Default**: 200 emails/day
-- **Purpose**: Maximum emails this campaign can send per day
-- **Calculation**: 200/day = ~8.3 emails/hour (24/7) or ~25 emails/hour (8-hour window)
+Sending attempt (using Sender 1):
+1. Check: 5 seconds since last email from Sender 1? ✓ (adaptive: 3 senders = 5s)
+2. Check: Sender 1 in batch pause? (if 100 emails sent from Sender 1) ✓
+3. Check: Sender 1 daily < 200? ✓
+4. Check: Campaign daily < 500? ✓
+5. Send email → Record in Redis → Increment Sender 1's batch count
+6. If Sender 1 reaches 100 emails → Sender 1 pauses 5min, Senders 2 & 3 continue
 
-### Hourly Limit
-- **Range**: 1 - 100 emails/hour
-- **Default**: 25 emails/hour
-- **Purpose**: Maximum emails this campaign can send per hour
-- **Note**: Must be less than or equal to daily_limit ÷ 24
-
-### Send Window
-- **Default**: 00:00 - 23:59 (24/7)
-- **Customizable**: Set start and end times
-- **Purpose**: Only send emails during these hours
-- **Example**: 9 AM - 5 PM for business hours
-
-### Weekdays Only
-- **Default**: Disabled (sends on weekends)
-- **When enabled**: Only sends Monday-Friday
-- **When disabled**: Sends 7 days a week
-
-## Recommended Settings by Scenario
-
-### New Email Account (Warmup)
-```
-Daily Limit: 50-100 emails/day
-Hourly Limit: 5-10 emails/hour
-Send Window: 9 AM - 5 PM
-Weekdays Only: Enabled
-```
-**Why**: Gradual warmup protects sender reputation
-
-### Established Account (Normal)
-```
-Daily Limit: 200 emails/day
-Hourly Limit: 25 emails/hour
-Send Window: 24/7 (00:00 - 23:59)
-Weekdays Only: Disabled
-```
-**Why**: Balanced speed and safety
-
-### High-Volume Campaign
-```
-Daily Limit: 400-500 emails/day
-Hourly Limit: 50-100 emails/hour
-Send Window: 24/7 (00:00 - 23:59)
-Weekdays Only: Disabled
-```
-**Why**: Maximum throughput (requires good sender reputation)
-
-## How Limits Work Together
-
-1. **Daily limit** is checked first - if reached, no more emails today
-2. **Hourly limit** is checked second - if reached, wait until next hour
-3. **Send window** restricts when emails can be sent
-4. **Weekdays only** skips weekends if enabled
-
-### Example Calculation
-
-**Campaign with 200/day, 25/hour, 24/7 window:**
-- Can send 25 emails in hour 1
-- Can send 25 emails in hour 2
-- ...continues for 8 hours = 200 emails
-- Then stops until next day (daily limit reached)
-
-## Global Limits (System-Wide)
-
-These are hard limits that cannot be exceeded:
-
-- **Absolute Maximum Daily**: 500 emails/day per sender
-- **Absolute Maximum Hourly**: 50 emails/hour per sender
-- **Minimum Interval**: 30 seconds between emails (hard limit)
-
-## Multiple Campaigns
-
-If you run multiple campaigns with the same sender:
-
-- **Shared daily limit**: All campaigns share the sender's daily limit
-- **Example**: Sender limit = 500/day
-  - Campaign 1: 200/day
-  - Campaign 2: 200/day
-  - Campaign 3: 100/day
-  - Total: 500/day (matches sender limit)
-
-## Tips for Success
-
-1. **Start conservative**: Use lower limits for new accounts
-2. **Monitor bounce rates**: If bounces increase, lower limits
-3. **Gradual increase**: Increase limits over time as reputation improves
-4. **Different limits per campaign**: Use lower limits for warmup campaigns
-5. **Respect provider limits**: Gmail = 500/day, Outlook = 10,000/day
-
-## Time to Send 1000 Emails
-
-| Daily Limit | Days Needed | Notes |
-|-------------|-------------|-------|
-| 50/day | 20 days | Very conservative (warmup) |
-| 100/day | 10 days | Conservative |
-| 200/day | 5 days | **Default** - Balanced |
-| 300/day | 3.3 days | Aggressive |
-| 500/day | 2 days | Maximum (Gmail limit) |
-
-## FAQ
-
-**Q: Can I change limits after creating a campaign?**
-A: Yes, you can update campaign settings, but be careful not to exceed provider limits.
-
-**Q: What happens if I set daily limit to 500 but sender limit is 200?**
-A: The campaign will be limited to 200/day (the sender's limit).
-
-**Q: Can I send faster than 30 seconds between emails?**
-A: No, 30 seconds is a hard minimum for safety.
-
-**Q: Do limits reset at midnight?**
-A: Yes, daily limits reset at midnight in the campaign's timezone.
-
-**Q: What if I have multiple campaigns with the same sender?**
-A: They share the sender's daily limit. Plan accordingly.
-
+Important notes
+✅ Adaptive delays: Automatically adjust based on rotation count (5s/7s/10s)
+✅ Per-sender batch pause: Each sender pauses independently, others continue
+✅ Adaptive batch sizes: 50/75/100 emails based on rotation count
+✅ Adaptive pause duration: 5min/7min/10min based on rotation count
+✅ Hourly limits: Tracked but not enforced by the rate limiter. Only daily limits are enforced.
+✅ Warmup: Automatically adjusts current_daily_limit daily. The rate limiter uses this adjusted limit.
+✅ Hard caps: 500/day per sender (cannot be exceeded even if warmup allows more).
+✅ Rotation benefits: With 3 senders, ~12 emails/minute vs ~6 emails/minute with 1 sender

@@ -633,3 +633,13 @@ docker-compose up -d
 
 For V2 features (AI replies, calendar booking), stay tuned!
 
+
+docker-compose up -d
+Rebuild and restart services:
+docker-compose build && docker-compose up -d
+Or rebuild specific services (backend and frontend):
+docker-compose build backend frontend && docker-compose up -d
+Or rebuild without cache (if needed):
+docker-compose build --no-cache backend frontend && docker-compose up -d
+View logs after building:
+docker-compose logs -f backend frontend

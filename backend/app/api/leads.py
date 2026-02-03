@@ -181,6 +181,29 @@ def delete_lead(lead_id: int, db: Session = Depends(get_db)):
     return {"status": "deleted", "lead_id": lead_id}
 
 
+@router.delete("/by-campaign/{campaign_id}")
+def delete_leads_by_campaign(campaign_id: int, db: Session = Depends(get_db)):
+    """
+    Delete all leads for a specific campaign.
+    Also resets the campaign's total_leads counter to 0.
+    """
+    from app.models import Campaign
+
+    campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    deleted = db.query(Lead).filter(Lead.campaign_id == campaign_id).delete(synchronize_session=False)
+
+    # Reset campaign lead count
+    campaign.total_leads = 0
+    
+    db.commit()
+
+    logger.info(f"Deleted {deleted} leads for campaign {campaign_id}")
+    return {"status": "deleted", "campaign_id": campaign_id, "deleted": deleted}
+
+
 @router.post("/import")
 async def import_leads(
     file: UploadFile = File(...),

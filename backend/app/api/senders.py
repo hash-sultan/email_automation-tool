@@ -32,15 +32,66 @@ def list_senders(
     db: Session = Depends(get_db)
 ):
     """List all senders."""
+    from datetime import datetime
+    from app.models.email_log import EmailLog, EmailStatus
+    
     query = db.query(Sender)
     
     if status:
         query = query.filter(Sender.status == status)
     
     senders = query.order_by(Sender.created_at.desc()).all()
+    
+    # Auto-fix: If warmup is disabled but current_daily_limit is still low, fix it
+    fixed_count = 0
+    for s in senders:
+        if not s.warmup_enabled and s.current_daily_limit < s.base_daily_limit:
+            s.current_daily_limit = s.base_daily_limit
+            if s.status == SenderStatus.WARMING_UP:
+                s.status = SenderStatus.ACTIVE
+                s.warmup_start_date = None
+                s.warmup_current_day = 0
+            fixed_count += 1
+    
+    if fixed_count > 0:
+        db.commit()
+        logger.info(f"Auto-fixed {fixed_count} senders with warmup disabled but low daily limits")
+    
+    # Calculate today's date for email counting
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    
     responses = []
     for s in senders:
+        # Calculate emails_sent_today from email_logs (more accurate than counter)
+        emails_sent_today = db.query(EmailLog).filter(
+            EmailLog.sender_id == s.id,
+            func.coalesce(EmailLog.sent_at, EmailLog.created_at) >= today,
+            EmailLog.status.in_([
+                EmailStatus.SENT,
+                EmailStatus.DELIVERED,
+                EmailStatus.OPENED,
+                EmailStatus.CLICKED,
+                EmailStatus.REPLIED
+            ])
+        ).count()
+        
+        # Calculate total emails sent (all time) from email_logs
+        total_emails_sent = db.query(EmailLog).filter(
+            EmailLog.sender_id == s.id,
+            EmailLog.status.in_([
+                EmailStatus.SENT,
+                EmailStatus.DELIVERED,
+                EmailStatus.OPENED,
+                EmailStatus.CLICKED,
+                EmailStatus.REPLIED
+            ])
+        ).count()
+        
         response = SenderResponse.model_validate(s)
+        # Override emails_sent_today with calculated value from email_logs
+        response.emails_sent_today = emails_sent_today
+        # Override total_emails_sent with calculated value from email_logs
+        response.total_emails_sent = total_emails_sent
         # Compute is_verified: True if connection_error is None and last_connection_check exists
         response.is_verified = s.connection_error is None and s.last_connection_check is not None
         # Map status to is_active for frontend compatibility
@@ -52,14 +103,98 @@ def list_senders(
     return responses
 
 
-@router.get("/{sender_id}", response_model=SenderResponse)
-def get_sender(sender_id: int, db: Session = Depends(get_db)):
-    """Get a specific sender with stats."""
+@router.get("/{sender_id}/stats-by-date")
+def get_sender_stats_by_date(
+    sender_id: int,
+    days: int = Query(30, ge=1, le=365, description="Number of days to show"),
+    db: Session = Depends(get_db)
+):
+    """Get email stats by date for a sender."""
+    from datetime import datetime, timedelta
+    from app.models.email_log import EmailLog, EmailStatus
+    
     sender = db.query(Sender).filter(Sender.id == sender_id).first()
     if not sender:
         raise HTTPException(status_code=404, detail="Sender not found")
     
+    # Calculate date range
+    end_date = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    start_date = end_date - timedelta(days=days-1)
+    
+    # Query emails grouped by date
+    stats_by_date = db.query(
+        func.date(func.coalesce(EmailLog.sent_at, EmailLog.created_at)).label('date'),
+        func.count(EmailLog.id).label('count')
+    ).filter(
+        EmailLog.sender_id == sender_id,
+        func.coalesce(EmailLog.sent_at, EmailLog.created_at) >= start_date,
+        EmailLog.status.in_([
+            EmailStatus.SENT,
+            EmailStatus.DELIVERED,
+            EmailStatus.OPENED,
+            EmailStatus.CLICKED,
+            EmailStatus.REPLIED
+        ])
+    ).group_by(
+        func.date(func.coalesce(EmailLog.sent_at, EmailLog.created_at))
+    ).order_by(
+        func.date(func.coalesce(EmailLog.sent_at, EmailLog.created_at)).desc()
+    ).all()
+    
+    # Convert to dictionary format
+    result = {}
+    for stat in stats_by_date:
+        date_str = stat.date.isoformat() if hasattr(stat.date, 'isoformat') else str(stat.date)
+        result[date_str] = stat.count
+    
+    return {
+        "sender_id": sender_id,
+        "days": days,
+        "stats_by_date": result
+    }
+
+
+@router.get("/{sender_id}", response_model=SenderResponse)
+def get_sender(sender_id: int, db: Session = Depends(get_db)):
+    """Get a specific sender with stats."""
+    from datetime import datetime
+    from app.models.email_log import EmailLog, EmailStatus
+    
+    sender = db.query(Sender).filter(Sender.id == sender_id).first()
+    if not sender:
+        raise HTTPException(status_code=404, detail="Sender not found")
+    
+    # Calculate emails_sent_today from email_logs (more accurate than counter)
+    today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    emails_sent_today = db.query(EmailLog).filter(
+        EmailLog.sender_id == sender.id,
+        func.coalesce(EmailLog.sent_at, EmailLog.created_at) >= today,
+        EmailLog.status.in_([
+            EmailStatus.SENT,
+            EmailStatus.DELIVERED,
+            EmailStatus.OPENED,
+            EmailStatus.CLICKED,
+            EmailStatus.REPLIED
+        ])
+    ).count()
+    
+    # Calculate total emails sent (all time) from email_logs
+    total_emails_sent = db.query(EmailLog).filter(
+        EmailLog.sender_id == sender.id,
+        EmailLog.status.in_([
+            EmailStatus.SENT,
+            EmailStatus.DELIVERED,
+            EmailStatus.OPENED,
+            EmailStatus.CLICKED,
+            EmailStatus.REPLIED
+        ])
+    ).count()
+    
     response = SenderResponse.model_validate(sender)
+    # Override emails_sent_today with calculated value from email_logs
+    response.emails_sent_today = emails_sent_today
+    # Override total_emails_sent with calculated value from email_logs
+    response.total_emails_sent = total_emails_sent
     
     # Compute is_verified: True if connection_error is None and last_connection_check exists
     response.is_verified = sender.connection_error is None and sender.last_connection_check is not None
@@ -70,7 +205,7 @@ def get_sender(sender_id: int, db: Session = Depends(get_db)):
     
     # Add stats
     response.stats = SenderStats(
-        emails_sent_today=sender.emails_sent_today,
+        emails_sent_today=emails_sent_today,  # Use calculated value
         emails_sent_this_hour=sender.emails_sent_this_hour,
         total_emails_sent=sender.total_emails_sent,
         total_bounces=sender.total_bounces,
@@ -88,6 +223,8 @@ def get_sender(sender_id: int, db: Session = Depends(get_db)):
 @router.post("/", response_model=SenderResponse)
 def create_sender(sender_data: SenderCreate, db: Session = Depends(get_db)):
     """Create a new sender with immediate SMTP validation."""
+    from app.api.settings import load_settings
+    
     # Check for duplicate email
     existing = db.query(Sender).filter(
         Sender.email == sender_data.email.lower()
@@ -98,6 +235,11 @@ def create_sender(sender_data: SenderCreate, db: Session = Depends(get_db)):
     
     sender_dict = sender_data.model_dump(exclude={'smtp_config', 'imap_config', 'oauth_config'})
     sender_dict['email'] = sender_data.email.lower()
+    
+    # Use settings default for base_daily_limit if not explicitly provided
+    if 'base_daily_limit' not in sender_dict or sender_dict.get('base_daily_limit') is None:
+        settings = load_settings()
+        sender_dict['base_daily_limit'] = settings.get('sender_daily_limit', 200)
     
     # Handle SMTP config
     if sender_data.smtp_config:
@@ -117,6 +259,10 @@ def create_sender(sender_data: SenderCreate, db: Session = Depends(get_db)):
         sender_dict['imap_folder'] = sender_data.imap_config.folder
     
     sender = Sender(**sender_dict)
+    
+    # If warmup is disabled, set current_daily_limit to base_daily_limit
+    if not sender.warmup_enabled:
+        sender.current_daily_limit = sender.base_daily_limit
     
     # Test SMTP connection immediately before saving
     if sender_data.smtp_config:
@@ -206,6 +352,22 @@ def update_sender(
     for key, value in update_data.items():
         setattr(sender, key, value)
     
+    # If warmup is disabled, set current_daily_limit to base_daily_limit
+    if 'warmup_enabled' in update_data and not update_data['warmup_enabled']:
+        sender.current_daily_limit = sender.base_daily_limit
+        # If sender was in warmup, mark as active
+        if sender.status == SenderStatus.WARMING_UP:
+            sender.status = SenderStatus.ACTIVE
+            sender.warmup_start_date = None
+            sender.warmup_current_day = 0
+    # Also fix if warmup is already disabled but current_daily_limit is still low
+    elif not sender.warmup_enabled and sender.current_daily_limit < sender.base_daily_limit:
+        sender.current_daily_limit = sender.base_daily_limit
+        if sender.status == SenderStatus.WARMING_UP:
+            sender.status = SenderStatus.ACTIVE
+            sender.warmup_start_date = None
+            sender.warmup_current_day = 0
+    
     db.commit()
     db.refresh(sender)
     
@@ -265,6 +427,37 @@ def skip_warmup(sender_id: int, db: Session = Depends(get_db)):
     skip_warmup_task.delay(sender_id)
     
     return {"status": "skipping", "sender_id": sender_id}
+
+
+@router.post("/fix-warmup-limits")
+def fix_warmup_limits(db: Session = Depends(get_db)):
+    """
+    Bulk fix: Update all senders with warmup disabled to use their full base_daily_limit.
+    This fixes existing senders that were created with warmup disabled but still have low daily limits.
+    """
+    senders = db.query(Sender).filter(
+        Sender.warmup_enabled == False,
+        Sender.current_daily_limit < Sender.base_daily_limit
+    ).all()
+    
+    fixed_count = 0
+    for sender in senders:
+        sender.current_daily_limit = sender.base_daily_limit
+        if sender.status == SenderStatus.WARMING_UP:
+            sender.status = SenderStatus.ACTIVE
+            sender.warmup_start_date = None
+            sender.warmup_current_day = 0
+        fixed_count += 1
+    
+    db.commit()
+    
+    logger.info(f"Fixed {fixed_count} senders with warmup disabled but low daily limits")
+    
+    return {
+        "status": "success",
+        "message": f"Fixed {fixed_count} senders",
+        "fixed_count": fixed_count
+    }
 
 
 @router.post("/{sender_id}/test-connection")

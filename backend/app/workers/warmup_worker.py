@@ -30,13 +30,20 @@ def update_warmup_task():
         warmup_engine = WarmupEngine(db)
         updated = warmup_engine.update_all_senders()
         
-        # Also reset daily counters
+        # Also reset daily counters and reactivate paused senders
         senders = db.query(Sender).filter(
-            Sender.status.in_([SenderStatus.ACTIVE, SenderStatus.WARMING_UP])
+            Sender.status.in_([SenderStatus.ACTIVE, SenderStatus.WARMING_UP, SenderStatus.PAUSED])
         ).all()
         
         for sender in senders:
             sender.reset_daily_stats()
+            # Reactivate senders that were paused due to Gmail limits
+            if sender.status == SenderStatus.PAUSED:
+                sender.status = SenderStatus.ACTIVE
+                logger.info(
+                    f"Reactivated sender {sender.id} ({sender.email}) after daily reset",
+                    extra={"sender_id": sender.id, "sender_email": sender.email}
+                )
         
         db.commit()
         

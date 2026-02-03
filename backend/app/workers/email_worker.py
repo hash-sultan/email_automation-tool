@@ -55,7 +55,11 @@ def send_email_task(
         campaign = db.query(Campaign).filter(Campaign.id == campaign_id).first()
         
         if not lead or not campaign:
-            logger.error(f"Lead or Campaign not found: lead={lead_id}, campaign={campaign_id}")
+            which = "lead" if not lead else "campaign"
+            logger.error(
+                f"{which.capitalize()} not found in send_email_task",
+                extra={"lead_id": lead_id, "campaign_id": campaign_id, "missing": which}
+            )
             return {"status": "error", "message": "Lead or Campaign not found"}
         
         # Check if campaign is still active
@@ -270,6 +274,28 @@ def send_bulk_emails_task(
                 )
                 skipped += 1
                 continue
+            
+            # Create QUEUED EmailLog *before* queuing the task so the lead is excluded from
+            # the next batch immediately. Otherwise the same leads get selected again and we
+            # flood the queue with duplicate tasks (each run skips "already has email").
+            from app.models.email_log import EmailType
+            placeholder_log = EmailLog(
+                campaign_id=campaign_id,
+                lead_id=lead.id,
+                followup_step=0,
+                email_type=EmailType.INITIAL,
+                to_email=lead.email,
+                to_name=lead.display_name or "",
+                from_email="(queued)",
+                from_name="",
+                reply_to="",
+                subject="(queued)",
+                body_html="",
+                body_plain="",
+                status=EmailStatus.QUEUED,
+            )
+            db.add(placeholder_log)
+            db.flush()
             
             # No delay: queue immediately (multiple senders handle throughput)
             send_email_task.apply_async(args=[lead.id, campaign_id, 0])
