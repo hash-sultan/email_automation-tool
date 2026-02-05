@@ -47,51 +47,51 @@ celery_app.conf.update(
     # Rate limiting (per worker)
     worker_concurrency=2,  # Conservative for email sending
     
-    # Task routes: control (start/bulk/wake) first so new campaigns don't wait behind send backlog
+    # Task routes: all app tasks go to default "celery" queue so a single worker
+    # (e.g. "celery -A app.workers.celery_app worker") consumes everything.
+    # Previously tasks were split across control/emails/followups; if the worker
+    # was started without --queues=control,emails,followups,default, nothing was consumed.
     task_routes={
-        "app.workers.email_worker.start_campaign_task": {"queue": "control"},
-        "app.workers.email_worker.send_bulk_emails_task": {"queue": "control"},
-        "app.workers.email_worker.wake_active_campaigns_task": {"queue": "control"},
-        "app.workers.email_worker.*": {"queue": "emails"},
-        "app.workers.followup_worker.*": {"queue": "followups"},
-        "app.workers.imap_worker.*": {"queue": "imap"},
-        "app.workers.warmup_worker.*": {"queue": "default"},
+        "app.workers.email_worker.*": {"queue": "celery"},
+        "app.workers.followup_worker.*": {"queue": "celery"},
+        "app.workers.imap_worker.*": {"queue": "celery"},
+        "app.workers.warmup_worker.*": {"queue": "celery"},
     },
     
-    # Beat schedule (periodic tasks)
+    # Beat schedule (periodic tasks) - all use "celery" so main worker picks them up
     beat_schedule={
         # Process follow-ups every 5 minutes
         "process-followups": {
             "task": "app.workers.followup_worker.process_followups_task",
             "schedule": crontab(minute="*/5"),
-            "options": {"queue": "followups"}
+            "options": {"queue": "celery"}
         },
         
         # Check replies every 5 minutes
         "check-replies": {
             "task": "app.workers.imap_worker.check_all_replies_task",
             "schedule": crontab(minute="*/5"),
-            "options": {"queue": "imap"}
+            "options": {"queue": "celery"}
         },
         
         # Update warmup daily at midnight
         "update-warmup": {
             "task": "app.workers.warmup_worker.update_warmup_task",
             "schedule": crontab(hour=0, minute=5),
-            "options": {"queue": "default"}
+            "options": {"queue": "celery"}
         },
         
         # Reset hourly counters
         "reset-hourly-counters": {
             "task": "app.workers.warmup_worker.reset_hourly_counters_task",
             "schedule": crontab(minute=0),
-            "options": {"queue": "default"}
+            "options": {"queue": "celery"}
         },
         # Safety net: wake active campaigns that still have leads (in case scheduled next-batch was lost)
         "wake-active-campaigns": {
             "task": "app.workers.email_worker.wake_active_campaigns_task",
             "schedule": crontab(minute="*/2"),  # every 2 minutes
-            "options": {"queue": "control"}
+            "options": {"queue": "celery"}
         },
     }
 )

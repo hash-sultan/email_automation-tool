@@ -85,11 +85,14 @@ def check_all_replies_task(since_hours: int = 24):
     """
     Check replies for all active senders.
     
-    This is called periodically by Celery Beat.
+    This is called periodically by Celery Beat. Reply tracking runs regardless
+    of campaign status (paused or active)—so replies are always detected and
+    visible on the Replies page even when all campaigns are paused.
     """
     logger.info("Checking replies for all senders")
     
     with get_db_context() as db:
+        # Sender status only (ACTIVE/WARMING_UP); no campaign filter—replies are tracked for all senders
         senders = db.query(Sender).filter(
             Sender.status.in_([SenderStatus.ACTIVE, SenderStatus.WARMING_UP]),
             Sender.imap_host.isnot(None)

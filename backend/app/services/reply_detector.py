@@ -311,35 +311,22 @@ class ReplyDetector:
                     )
                 return None
             
-            # Get email body to check for unsubscribe and error messages
-            # Try to get both HTML and plain text versions
-            status, body_data = await imap.fetch(msg_id, '(BODY[TEXT])')
+            # Get full message and parse to extract clean body (avoid raw MIME in preview)
             body_text = ""
             body_html_text = ""
-            
-            # Get plain text body
-            if status == 'OK' and body_data[1]:
-                body_bytes = body_data[1]
-                if isinstance(body_bytes, tuple):
-                    body_bytes = body_bytes[1]
+            status, full_data = await imap.fetch(msg_id, '(RFC822)')
+            if status == 'OK' and full_data and full_data[0]:
+                raw = full_data[0]
+                if isinstance(raw, tuple):
+                    raw = raw[1]
                 try:
-                    body_text = body_bytes.decode('utf-8', errors='ignore')
-                except:
-                    body_text = str(body_bytes)
-            
-            # Try to get HTML body (for better reply extraction)
-            try:
-                html_status, html_data = await imap.fetch(msg_id, '(BODY[1])')
-                if html_status == 'OK' and html_data[1]:
-                    html_bytes = html_data[1]
-                    if isinstance(html_bytes, tuple):
-                        html_bytes = html_bytes[1]
-                    try:
-                        body_html_text = html_bytes.decode('utf-8', errors='ignore')
-                    except:
-                        pass
-            except:
-                pass
+                    if isinstance(raw, bytes):
+                        full_msg = email.message_from_bytes(raw)
+                    else:
+                        full_msg = email.message_from_string(str(raw))
+                    body_text, body_html_text = self._extract_body_from_message(full_msg)
+                except Exception as e:
+                    logger.debug(f"Failed to parse reply body: {e}")
             
             # Extract just the reply portion (remove quoted original message)
             # Common patterns: "On ... wrote:", "-----Original Message-----", etc.
@@ -529,6 +516,38 @@ class ReplyDetector:
             result.append(part)
         
         return ''.join(result)
+
+    def _extract_body_from_message(self, msg: email.message.Message) -> Tuple[str, str]:
+        """
+        Extract plain text and HTML body from a parsed email message.
+        Walks MIME parts and returns decoded content only (no MIME headers/boundaries).
+        """
+        plain = ""
+        html = ""
+        for part in msg.walk():
+            if part.get_content_maintype() == 'multipart':
+                continue
+            ctype = (part.get_content_type() or "").lower()
+            if ctype == 'text/plain' and not plain:
+                raw = part.get_payload(decode=True)
+                if raw:
+                    charset = part.get_content_charset() or 'utf-8'
+                    try:
+                        plain = raw.decode(charset, errors='replace').strip()
+                    except Exception:
+                        plain = raw.decode('utf-8', errors='replace').strip()
+            elif ctype == 'text/html' and not html:
+                raw = part.get_payload(decode=True)
+                if raw:
+                    charset = part.get_content_charset() or 'utf-8'
+                    try:
+                        html = raw.decode(charset, errors='replace').strip()
+                    except Exception:
+                        html = raw.decode('utf-8', errors='replace').strip()
+        if html and not plain:
+            plain = re.sub(r'<[^>]+>', '', html)
+            plain = re.sub(r'\s+', ' ', plain).strip()
+        return (plain, html)
     
     def _check_unsubscribe_intent(self, text: str) -> bool:
         """Check if text contains unsubscribe intent."""

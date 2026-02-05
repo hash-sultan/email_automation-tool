@@ -15,6 +15,7 @@ from app.models.lead import LeadStatus
 from app.models.campaign import CampaignStatus
 from app.services.email_service import EmailService
 from app.services.rate_limiter import RateLimiter
+from app.services.campaign_lock import get_running_campaign_id
 from app.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -48,6 +49,15 @@ def send_email_task(
             "followup_step": followup_step
         }
     )
+    
+    # Global lock: only the running campaign may send; others skip immediately
+    running = get_running_campaign_id()
+    if running is not None and running != campaign_id:
+        logger.info(
+            f"Campaign {campaign_id} is not the running campaign (running={running}), skipping send",
+            extra={"lead_id": lead_id, "campaign_id": campaign_id, "running_campaign_id": running}
+        )
+        return {"status": "skipped", "message": f"Another campaign ({running}) is running"}
     
     with get_db_context() as db:
         # Load entities
@@ -181,6 +191,15 @@ def send_bulk_emails_task(
     
     This task fans out to individual send_email_task calls.
     """
+    # Global lock: only the running campaign may send initial emails
+    running = get_running_campaign_id()
+    if running is not None and running != campaign_id:
+        logger.info(
+            f"Campaign {campaign_id} is not the running campaign (running={running}), skipping bulk send",
+            extra={"campaign_id": campaign_id, "running_campaign_id": running}
+        )
+        return {"status": "skipped", "message": f"Another campaign ({running}) is running"}
+    
     logger.info(f"Processing bulk email task for campaign {campaign_id}")
     
     with get_db_context() as db:
@@ -410,23 +429,62 @@ def start_campaign_task(campaign_id: int):
 @celery_app.task(name="app.workers.email_worker.wake_active_campaigns_task")
 def wake_active_campaigns_task():
     """
-    Safety net: find ACTIVE campaigns that still have leads to contact and queue
-    send_bulk_emails_task for them. If a scheduled 'next batch' task was lost
-    (worker restart, Redis, etc.), this will wake the campaign within a few minutes.
+    Only ONE campaign may run at a time. If no campaign holds the lock, pick one
+    ACTIVE campaign that has work and assign it the lock, then queue send_bulk.
+    If a campaign already holds the lock, only that campaign may run; optionally
+    queue send_bulk for it again if it has more leads (safety net).
     """
     from app.models.email_log import EmailStatus
+    from app.services.campaign_lock import get_running_campaign_id, set_running_campaign
 
+    running = get_running_campaign_id()
     with get_db_context() as db:
         active = db.query(Campaign).filter(Campaign.status == CampaignStatus.ACTIVE).all()
         if not active:
             return {"status": "ok", "woken": 0}
 
+        # If a campaign already holds the lock, only queue more work for that one (safety net)
+        if running is not None:
+            campaign = db.query(Campaign).filter(Campaign.id == running).first()
+            if campaign and campaign.status == CampaignStatus.ACTIVE:
+                can_send, _ = campaign.can_send_now
+                if can_send:
+                    leads_with_pending = (
+                        db.query(EmailLog.lead_id)
+                        .filter(
+                            EmailLog.campaign_id == campaign.id,
+                            EmailLog.followup_step == 0,
+                            EmailLog.status.in_([EmailStatus.QUEUED, EmailStatus.SENDING]),
+                        )
+                        .subquery()
+                    )
+                    remaining = (
+                        db.query(Lead)
+                        .filter(
+                            Lead.campaign_id == campaign.id,
+                            Lead.status.in_([LeadStatus.QUEUED, LeadStatus.NEW]),
+                            Lead.replied == False,
+                            Lead.bounced == False,
+                            Lead.unsubscribed == False,
+                            Lead.last_sent_at.is_(None),
+                            ~Lead.id.in_(db.query(leads_with_pending.c.lead_id)),
+                        )
+                        .count()
+                    )
+                    if remaining > 0:
+                        send_bulk_emails_task.delay(campaign.id)
+                        logger.info(
+                            "Woke running campaign (safety net)",
+                            extra={"campaign_id": campaign.id, "remaining_leads": remaining},
+                        )
+            return {"status": "ok", "woken": 1 if running else 0}
+
+        # No campaign holds the lock: pick one ACTIVE campaign with work and assign lock
         woken = 0
         for campaign in active:
             can_send, _ = campaign.can_send_now
             if not can_send:
                 continue
-            # Same logic as send_bulk_emails_task: leads not yet contacted
             leads_with_pending = (
                 db.query(EmailLog.lead_id)
                 .filter(
@@ -450,12 +508,14 @@ def wake_active_campaigns_task():
                 .count()
             )
             if remaining > 0:
+                set_running_campaign(campaign.id)
                 send_bulk_emails_task.delay(campaign.id)
-                woken += 1
+                woken = 1
                 logger.info(
-                    "Woke active campaign (safety net)",
+                    "Woke active campaign (lock assigned)",
                     extra={"campaign_id": campaign.id, "remaining_leads": remaining},
                 )
+                break
         return {"status": "ok", "woken": woken}
 
 

@@ -124,27 +124,12 @@ export default function Settings() {
           <div>
             <h2 className="text-lg font-semibold text-gray-900">Daily Limits</h2>
             <p className="text-sm text-gray-500">
-              Configure sending limits for campaigns and senders
+              Configure sending limits for senders
             </p>
           </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Campaign Daily Limit
-            </label>
-            <input
-              type="number"
-              value={settings.campaign_daily_limit}
-              onChange={(e) => setSettings({ ...settings, campaign_daily_limit: parseInt(e.target.value) || 500 })}
-              min={1}
-              max={1000}
-              className="input"
-            />
-            <p className="text-xs text-gray-500 mt-1">Maximum emails per campaign per day (max: 1000)</p>
-          </div>
-
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Sender Daily Limit

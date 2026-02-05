@@ -5,9 +5,9 @@ Automated follow-up scheduling and execution
 
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any, Tuple
-from sqlalchemy.orm import Session
-from sqlalchemy import and_, or_
-import pytz
+from sqlalchemy.orm import Session  # type: ignore[reportMissingImports]
+from sqlalchemy import and_, or_  # type: ignore[reportMissingImports]
+import pytz  # type: ignore[reportMissingModuleSource]
 
 from app.models import Lead, Campaign, EmailLog
 from app.models.lead import LeadStatus
@@ -38,7 +38,7 @@ class FollowUpEngine:
     
     def get_leads_ready_for_followup(
         self,
-        campaign_id: int = None,
+        campaign_id: Optional[int] = None,
         limit: int = 100,
         allow_paused_campaign: bool = False,
     ) -> List[Lead]:
@@ -47,17 +47,20 @@ class FollowUpEngine:
 
         Criteria:
         - Lead is contactable (not replied, bounced, unsubscribed)
+        - Lead has received at least one email (last_sent_at set) so we never send "follow-up" before initial
         - Campaign has follow-ups enabled (and is ACTIVE unless allow_paused_campaign)
         - next_followup_at is in the past (timezone-aware comparison)
         """
         now = datetime.now(timezone.utc)
+        # SQLAlchemy column expressions (.in_(), .isnot(), <=, .asc()) — type checker sees enum/optional
         conditions = [
             Lead.replied == False,
             Lead.bounced == False,
             Lead.unsubscribed == False,
-            Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED]),
-            Lead.next_followup_at.isnot(None),
-            Lead.next_followup_at <= now,
+            Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED]),  # type: ignore[reportAttributeAccessIssue]
+            Lead.last_sent_at.isnot(None),  # type: ignore[reportOptionalMemberAccess]
+            Lead.next_followup_at.isnot(None),  # type: ignore[reportOptionalMemberAccess]
+            Lead.next_followup_at <= now,  # type: ignore[reportOptionalOperand]
             Campaign.followup_enabled == True,
             Lead.step < Campaign.max_followup_steps,
         ]
@@ -68,7 +71,7 @@ class FollowUpEngine:
         if campaign_id:
             query = query.filter(Lead.campaign_id == campaign_id)
 
-        return query.order_by(Lead.next_followup_at.asc()).limit(limit).all()
+        return query.order_by(Lead.next_followup_at.asc()).limit(limit).all()  # type: ignore[reportOptionalMemberAccess]
     
     def schedule_next_followup(self, lead: Lead, campaign: Campaign) -> Optional[datetime]:
         """
@@ -138,10 +141,10 @@ class FollowUpEngine:
         return next_followup
     
     def _adjust_to_send_window(
-        self, 
-        dt: datetime, 
+        self,
+        dt: datetime,
         campaign: Campaign,
-        timezone: str = None
+        timezone: Optional[str] = None,
     ) -> datetime:
         """
         Adjust datetime to be within the campaign's send window.
@@ -177,7 +180,7 @@ class FollowUpEngine:
         # Convert back to UTC
         return local_dt.astimezone(pytz.UTC).replace(tzinfo=None)
     
-    def cancel_followups(self, lead: Lead, reason: str = None) -> None:
+    def cancel_followups(self, lead: Lead, reason: Optional[str] = None) -> None:
         """
         Cancel all pending follow-ups for a lead.
         Called on reply, bounce, or unsubscribe.
@@ -200,7 +203,7 @@ class FollowUpEngine:
         result = self.db.query(Lead).filter(
             and_(
                 Lead.campaign_id == campaign_id,
-                Lead.next_followup_at.isnot(None)
+                Lead.next_followup_at.isnot(None),  # type: ignore[reportOptionalMemberAccess]
             )
         ).update(
             {Lead.next_followup_at: None},
@@ -229,9 +232,9 @@ class FollowUpEngine:
                 Lead.bounced == False,
                 Lead.unsubscribed == False,
                 Lead.step < campaign.max_followup_steps,
-                Lead.next_followup_at.is_(None),
-                Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED]),
-                Lead.last_sent_at.isnot(None)  # Only leads that have received initial email
+                Lead.next_followup_at.is_(None),  # type: ignore[reportOptionalMemberAccess]
+                Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED]),  # type: ignore[reportAttributeAccessIssue]
+                Lead.last_sent_at.isnot(None),  # Only leads that have received initial email  # type: ignore[reportOptionalMemberAccess]
             )
         ).all()
         
@@ -243,31 +246,31 @@ class FollowUpEngine:
         logger.info(f"Resumed follow-ups for {count} leads in campaign {campaign_id}")
         return count
     
-    def get_followup_queue_stats(self, campaign_id: int = None) -> Dict[str, Any]:
+    def get_followup_queue_stats(self, campaign_id: Optional[int] = None) -> Dict[str, Any]:
         """
         Get statistics about the follow-up queue.
         """
         now = datetime.now(timezone.utc)
         
         base_query = self.db.query(Lead).filter(
-            Lead.next_followup_at.isnot(None)
+            Lead.next_followup_at.isnot(None),  # type: ignore[reportOptionalMemberAccess]
         )
-        
+
         if campaign_id:
             base_query = base_query.filter(Lead.campaign_id == campaign_id)
-        
-        # Count by status
-        ready_now = base_query.filter(Lead.next_followup_at <= now).count()
+
+        # Count by status (SQLAlchemy column comparisons)
+        ready_now = base_query.filter(Lead.next_followup_at <= now).count()  # type: ignore[reportOptionalOperand]
         next_hour = base_query.filter(
             and_(
-                Lead.next_followup_at > now,
-                Lead.next_followup_at <= now + timedelta(hours=1)
+                Lead.next_followup_at > now,  # type: ignore[reportOptionalOperand]
+                Lead.next_followup_at <= now + timedelta(hours=1),  # type: ignore[reportOptionalOperand]
             )
         ).count()
         next_24_hours = base_query.filter(
             and_(
-                Lead.next_followup_at > now,
-                Lead.next_followup_at <= now + timedelta(hours=24)
+                Lead.next_followup_at > now,  # type: ignore[reportOptionalOperand]
+                Lead.next_followup_at <= now + timedelta(hours=24),  # type: ignore[reportOptionalOperand]
             )
         ).count()
         total_scheduled = base_query.count()
@@ -289,9 +292,9 @@ class FollowUpEngine:
     
     def get_pending_followups(
         self,
-        campaign_id: int = None,
+        campaign_id: Optional[int] = None,
         hours_ahead: int = 24,
-        limit: int = 100
+        limit: int = 100,
     ) -> List[Dict[str, Any]]:
         """
         Get list of pending follow-ups for preview.
@@ -300,15 +303,15 @@ class FollowUpEngine:
         
         query = self.db.query(Lead).filter(
             and_(
-                Lead.next_followup_at.isnot(None),
-                Lead.next_followup_at <= now + timedelta(hours=hours_ahead)
+                Lead.next_followup_at.isnot(None),  # type: ignore[reportOptionalMemberAccess]
+                Lead.next_followup_at <= now + timedelta(hours=hours_ahead),  # type: ignore[reportOptionalOperand]
             )
         )
-        
+
         if campaign_id:
             query = query.filter(Lead.campaign_id == campaign_id)
-        
-        leads = query.order_by(Lead.next_followup_at.asc()).limit(limit).all()
+
+        leads = query.order_by(Lead.next_followup_at.asc()).limit(limit).all()  # type: ignore[reportOptionalMemberAccess]
         
         return [
             {

@@ -14,9 +14,55 @@ from app.models import EmailLog, Lead, Sender, Campaign
 from app.models.email_log import EmailStatus
 from app.services.email_service import EmailService
 from app.utils.logger import get_logger
+import re
+import base64
 
 logger = get_logger(__name__)
 router = APIRouter()
+
+
+def _decode_base64_body(text: Optional[str]) -> Optional[str]:
+    """If text looks like Base64, decode it and return plain text (strip HTML if needed)."""
+    if not text or not text.strip():
+        return None
+    t = text.strip()
+    # Base64: alphanumeric, +, /, = only; typically no spaces; min length
+    if len(t) < 20 or re.search(r"[^\w+/=]", t):
+        return None
+    try:
+        raw = base64.b64decode(t, validate=True)
+        decoded = raw.decode("utf-8", errors="replace").strip()
+        if not decoded:
+            return None
+        # If decoded content is HTML, strip tags for preview
+        if "<" in decoded and ">" in decoded:
+            decoded = re.sub(r"<[^>]+>", "", decoded)
+            decoded = re.sub(r"\s+", " ", decoded).strip()
+        return decoded
+    except Exception:
+        return None
+
+
+def _strip_mime_headers(text: Optional[str]) -> str:
+    """If text looks like raw MIME (boundaries, Content-Type), extract the first real content block."""
+    if not text or not text.strip():
+        return ""
+    t = text.strip()
+    # Raw MIME often starts with boundary or Content-* headers
+    if re.match(r"^--=?[\w.-]+", t) or re.match(r"^Content-Type:", t, re.I) or re.match(r"^Content-Transfer", t, re.I):
+        # Find first double newline and take what's after; then take first block of non-header lines
+        parts = re.split(r"\n\s*\n", t, maxsplit=1)
+        if len(parts) > 1:
+            after_headers = parts[1].strip()
+            # Stop at next MIME boundary or header-like line
+            lines = []
+            for line in after_headers.split("\n"):
+                if re.match(r"^--=?[\w.-]+", line.strip()) or re.match(r"^Content-", line.strip(), re.I):
+                    break
+                lines.append(line)
+            return "\n".join(lines).strip()
+        return ""
+    return t
 
 
 class ReplyResponse(BaseModel):
@@ -103,7 +149,13 @@ def list_replies(
         sender = db.query(Sender).filter(Sender.id == reply.sender_id).first()
 
         # Prefer plain text if available; otherwise fall back to HTML truncated
-        base_text = reply.body_plain or reply.body_html or ""
+        # Decode Base64 if stored that way; else strip raw MIME so we show actual reply text
+        raw_text = reply.body_plain or reply.body_html or ""
+        decoded = _decode_base64_body(raw_text)
+        if decoded is not None:
+            base_text = decoded
+        else:
+            base_text = _strip_mime_headers(raw_text) or raw_text
         preview = (base_text[:280] + "…") if len(base_text) > 280 else base_text
         
         items.append(ReplyResponse(
@@ -120,7 +172,7 @@ def list_replies(
             original_message_id=reply.message_id,
             replied_at=reply.replied_at,
             created_at=reply.created_at,
-            body_text=base_text,
+            body_text=base_text if base_text else raw_text,
             body_preview=preview
         ))
     

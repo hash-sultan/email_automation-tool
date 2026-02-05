@@ -16,8 +16,14 @@ from app.schemas.campaign import (
     CampaignCreate, CampaignUpdate, CampaignResponse, 
     CampaignListResponse, CampaignStats
 )
-from app.workers.email_worker import start_campaign_task, pause_campaign_task, send_bulk_emails_task
+from app.workers.email_worker import (
+    start_campaign_task,
+    pause_campaign_task,
+    send_bulk_emails_task,
+    wake_active_campaigns_task,
+)
 from app.workers.followup_worker import pause_campaign_followups_task, resume_campaign_followups_task, process_followups_task
+from app.services.campaign_lock import set_running_campaign, clear_running_campaign
 from app.utils.logger import get_logger
 from sqlalchemy import func
 
@@ -434,6 +440,9 @@ def start_campaign(campaign_id: int, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(campaign)
     
+    # Global lock: only this campaign may send (initial + follow-ups) until paused
+    set_running_campaign(campaign_id)
+    
     # Mark leads QUEUED immediately so when the worker runs it can pick them without delay
     updated = db.query(Lead).filter(
         Lead.campaign_id == campaign_id,
@@ -443,7 +452,7 @@ def start_campaign(campaign_id: int, db: Session = Depends(get_db)):
         db.commit()
         logger.info("Start campaign: marked leads QUEUED", extra={"campaign_id": campaign_id, "leads_updated": updated})
     
-    # Worker will trigger first send batch (if queue is busy with other campaigns, this may run after a delay)
+    # Worker will trigger first send batch
     start_campaign_task.delay(campaign_id)
     
     return {"status": "starting", "campaign_id": campaign_id}
@@ -468,8 +477,12 @@ def pause_campaign(campaign_id: int, db: Session = Depends(get_db)):
         extra={"campaign_id": campaign_id, "campaign_name": campaign.name},
     )
     
-    # Queue background tasks for cleanup (follow-ups, etc.)
+    # Release global lock so another campaign can run; tasks for this campaign will no-op when they check lock
+    clear_running_campaign(campaign_id)
+    # Pause follow-ups for this campaign
     pause_campaign_followups_task.delay(campaign_id)
+    # Wake another campaign so queue is never "busy but idle"
+    wake_active_campaigns_task.delay()
     
     # Return updated campaign
     from app.schemas.campaign import CampaignResponse
@@ -494,6 +507,9 @@ def resume_campaign(campaign_id: int, db: Session = Depends(get_db)):
     campaign.status = CampaignStatus.ACTIVE
     db.commit()
     db.refresh(campaign)
+    
+    # Global lock: only this campaign may send
+    set_running_campaign(campaign_id)
     
     # Queue background tasks for resuming
     resume_campaign_followups_task.delay(campaign_id)
@@ -523,14 +539,15 @@ def trigger_followups(campaign_id: int, db: Session = Depends(get_db)):
     
     # Ensure only one campaign runs at a time: pause any other active campaigns
     _pause_all_other_active_campaigns(db, except_campaign_id=campaign_id)
-    # Make this campaign active so it's the single "running" campaign (initial or follow-ups)
+    # Make this campaign active and holder of the global lock (initial + follow-ups)
     if campaign.status != CampaignStatus.ACTIVE:
         campaign.status = CampaignStatus.ACTIVE
         db.commit()
         db.refresh(campaign)
+    set_running_campaign(campaign_id)
     
-    # Set next_followup_at = now for ALL contactable leads that can receive follow-ups
-    # (including those with next_followup_at NULL so they get processed)
+    # Set next_followup_at = now only for leads that have ALREADY received at least one email
+    # (last_sent_at set). Otherwise we would try to send "follow-up" before initial.
     from datetime import timezone
     now = datetime.now(timezone.utc)
     eligible_leads = db.query(Lead).filter(
@@ -540,6 +557,7 @@ def trigger_followups(campaign_id: int, db: Session = Depends(get_db)):
             Lead.bounced == False,
             Lead.unsubscribed == False,
             Lead.status.in_([LeadStatus.CONTACTED, LeadStatus.QUEUED]),
+            Lead.last_sent_at.isnot(None),
             Lead.step < campaign.max_followup_steps,
         )
     ).all()
@@ -554,7 +572,7 @@ def trigger_followups(campaign_id: int, db: Session = Depends(get_db)):
             extra={"campaign_id": campaign_id, "updated_leads": updated_count}
         )
     
-    # Queue follow-up processing for this campaign only (single campaign at a time)
+    # Queue follow-up processing for this campaign only
     task = process_followups_task.delay(campaign_id=campaign_id, limit=500)
     
     logger.info(
@@ -562,12 +580,19 @@ def trigger_followups(campaign_id: int, db: Session = Depends(get_db)):
         extra={"campaign_id": campaign_id, "task_id": task.id, "leads_updated": updated_count}
     )
     
+    if updated_count == 0:
+        msg = (
+            "No leads ready for follow-up yet. Leads need at least one email sent (initial) before "
+            "follow-ups can run. Send initial emails first, or wait for initial sends to complete."
+        )
+    else:
+        msg = f"Follow-ups for this campaign only. {updated_count} leads ready; other campaigns paused. Processing queued."
     return {
         "status": "triggered",
         "campaign_id": campaign_id,
         "task_id": task.id,
         "leads_updated": updated_count,
-        "message": f"Follow-ups for this campaign only. {updated_count} leads ready; other campaigns paused. Processing queued."
+        "message": msg,
     }
 
 
@@ -581,8 +606,9 @@ def stop_campaign(campaign_id: int, db: Session = Depends(get_db)):
     campaign.status = CampaignStatus.STOPPED
     db.commit()
     
-    # Pause all follow-ups
+    clear_running_campaign(campaign_id)
     pause_campaign_followups_task.delay(campaign_id)
+    wake_active_campaigns_task.delay()
     
     return {"status": "stopped", "campaign_id": campaign_id}
 

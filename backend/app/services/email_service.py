@@ -250,12 +250,13 @@ class EmailService:
                 # Adaptive delays and batch pause based on rotation count
                 # Skip rate limiting for manual replies - user explicitly wants to send
                 if campaign:
+                    # Campaign-level daily limits disabled; only sender-level limits apply.
                     allowed, wait_time = await self.rate_limiter.check_rate_limit(
                         sender_id=sender.id,
                         campaign_id=campaign.id,
                         num_rotation_senders=num_rotation_senders,
                         sender_daily_limit=sender.current_daily_limit,
-                        campaign_daily_limit=campaign.daily_limit,
+                        campaign_daily_limit=None,
                     )
                     if not allowed:
                         logger.warning(f"Rate limited, wait {wait_time}s (rotation: {num_rotation_senders} senders)")
@@ -647,6 +648,28 @@ class EmailService:
                 email_log.status = EmailStatus.FAILED
                 email_log.error_message = result.error_message
                 email_log.retry_count += 1
+
+                # If failure is SMTP connection/auth, mark sender as disconnected so UI shows correct status
+                err = (result.error_message or "").lower()
+                if any(
+                    x in err
+                    for x in (
+                        "failed to connect to smtp",
+                        "please log in with your web browser",
+                        "534",
+                        "535",
+                        "connection lost",
+                        "authentication failed",
+                        "invalid credentials",
+                    )
+                ):
+                    from app.models.sender import SenderStatus
+                    sender.connection_error = (result.error_message or "SMTP connection failed")[:2000]
+                    sender.status = SenderStatus.DISCONNECTED
+                    logger.warning(
+                        f"Marked sender {sender.id} ({sender.email}) as disconnected due to SMTP error",
+                        extra={"sender_id": sender.id, "error": result.error_message},
+                    )
 
                 logger.error(
                     "Email send failed",

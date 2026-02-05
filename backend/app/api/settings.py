@@ -5,14 +5,16 @@ XenFlow Mailer - Settings API
 import json
 from pathlib import Path
 from typing import Dict, Any
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
-from sqlalchemy import update
+from fastapi import APIRouter, Depends, HTTPException  # type: ignore[reportMissingImports]
+from pydantic import BaseModel, Field  # type: ignore[reportMissingImports]
+from sqlalchemy.orm import Session  # type: ignore[reportMissingImports]
+from sqlalchemy import update  # type: ignore[reportMissingImports]
 
 from app.database import get_db
 from app.models import Campaign, EmailLog, Lead, Sender, CampaignSender, FollowUpTemplate
+from app.services.campaign_lock import clear_running_campaign
 from app.utils.logger import get_logger
+from app.workers.celery_app import celery_app
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -81,32 +83,40 @@ def reset_all_data(db: Session = Depends(get_db)):
     Reset all campaign and activity data for a fresh start.
     
     This will:
+    - Clear the global campaign lock and purge all pending Celery tasks (queues)
     - Delete all campaigns (and their leads, email logs, follow-up templates)
     - Delete all email logs (including replies)
     - Reset all sender counters to 0
     - Keep templates and senders intact
     """
     try:
+        # Clear the global "running campaign" lock so no stale campaign id blocks new campaigns
+        clear_running_campaign(campaign_id=None)
+        
+        # Purge all pending tasks from the Celery queue so no stale send/follow-up tasks run
+        try:
+            with celery_app.connection_or_acquire() as conn:
+                conn.default_channel.queue_purge("celery")
+            logger.info("Celery queue purged")
+        except Exception as e:
+            logger.warning(f"Could not purge Celery queue (non-fatal): {e}")
+        
         # Count what will be deleted for reporting
         campaign_count = db.query(Campaign).count()
         email_log_count = db.query(EmailLog).count()
         lead_count = db.query(Lead).count()
         
-        # Delete all email logs first (including replies)
-        # This must be done before deleting campaigns to avoid foreign key issues
-        deleted_email_logs = db.query(EmailLog).delete()
-        
-        # Delete all campaigns (cascades to leads, campaign_senders, followup_templates)
-        deleted_campaigns = db.query(Campaign).delete()
-        
-        # Delete any orphaned leads (shouldn't happen after campaign delete, but just in case)
-        deleted_leads = db.query(Lead).delete()
-        
-        # Delete any orphaned campaign_senders (shouldn't happen after campaign delete, but just in case)
-        deleted_campaign_senders = db.query(CampaignSender).delete()
-        
-        # Delete any orphaned followup_templates (shouldn't happen after campaign delete, but just in case)
-        deleted_followup_templates = db.query(FollowUpTemplate).delete()
+        # Delete in dependency order to satisfy foreign keys (PostgreSQL does not cascade on bulk DELETE).
+        # 1. EmailLog references campaign_id, lead_id, sender_id
+        deleted_email_logs = db.query(EmailLog).delete(synchronize_session=False)
+        # 2. Lead references campaign_id — must delete before campaigns
+        deleted_leads = db.query(Lead).delete(synchronize_session=False)
+        # 3. CampaignSender references campaign_id
+        deleted_campaign_senders = db.query(CampaignSender).delete(synchronize_session=False)
+        # 4. FollowUpTemplate references campaign_id
+        deleted_followup_templates = db.query(FollowUpTemplate).delete(synchronize_session=False)
+        # 5. Campaign — now safe to delete
+        deleted_campaigns = db.query(Campaign).delete(synchronize_session=False)
         
         # Reset all sender counters to 0
         # Keep senders intact, just reset their stats
@@ -131,7 +141,7 @@ def reset_all_data(db: Session = Depends(get_db)):
         
         return {
             "status": "success",
-            "message": "All campaign and activity data has been reset",
+            "message": "All campaign and activity data has been reset; campaign lock cleared; Celery queue purged.",
             "deleted": {
                 "campaigns": deleted_campaigns,
                 "email_logs": deleted_email_logs,
@@ -142,7 +152,7 @@ def reset_all_data(db: Session = Depends(get_db)):
             "preserved": {
                 "senders": "All senders kept intact",
                 "templates": "All templates kept intact",
-            }
+            },
         }
     except Exception as e:
         db.rollback()

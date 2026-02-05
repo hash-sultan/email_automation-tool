@@ -157,10 +157,8 @@ class Campaign(Base):
     @property
     def can_send_now(self) -> tuple:
         """Check if we can send right now (rate limits)"""
-        # Check daily limit only (hourly limit removed per user request)
-        if self.emails_today >= self.daily_limit:
-            return False, "Daily limit reached"
-        
+        # Campaign-level daily limit disabled per user request.
+        # Sending is now controlled only by sender-level limits and global safety checks.
         return True, "OK"
     
     def increment_sent(self) -> None:

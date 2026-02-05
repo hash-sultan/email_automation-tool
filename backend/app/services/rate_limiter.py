@@ -86,25 +86,19 @@ class RateLimiter:
         else:
             min_interval = 10  # 10 seconds with 1 sender
         
-        # Load system settings for global caps
+        # Load system settings for global caps (sender-level only; campaign caps disabled)
         try:
             from app.api.settings import load_settings
             system_settings = load_settings()
             max_sender_limit = system_settings.get('sender_daily_limit', 200)
-            max_campaign_limit = system_settings.get('campaign_daily_limit', 1000)
         except Exception:
             # Fallback to defaults if settings can't be loaded
             max_sender_limit = 200
-            max_campaign_limit = 1000
         
-        # Use defaults if not provided, but cap at settings limits
+        # Use defaults if not provided, but cap at settings limits (sender-level only)
         sender_daily_limit = sender_daily_limit or settings.MAX_EMAILS_PER_DAY
         # Cap sender limit at settings value (settings take precedence)
         sender_daily_limit = min(sender_daily_limit, max_sender_limit)
-        
-        campaign_daily_limit = campaign_daily_limit or 100
-        # Cap campaign limit at settings value (settings take precedence)
-        campaign_daily_limit = min(campaign_daily_limit, max_campaign_limit)
         
         # Keys
         sender_daily_key = f"{self.PREFIX_SENDER_DAILY}:{sender_id}"
@@ -128,7 +122,7 @@ class RateLimiter:
         
         # Batch pause disabled - removed per user request
         
-        # Check sender daily limit (max 500/day)
+        # Check sender daily limit (max 500/day, global hard cap)
         max_daily = min(sender_daily_limit, SafetyLimits.ABSOLUTE_MAX_EMAILS_PER_DAY)
         if sender_daily_count >= max_daily:
             # Calculate wait time until midnight
@@ -137,12 +131,7 @@ class RateLimiter:
             logger.debug(f"Sender daily limit reached: {sender_daily_count}/{max_daily}")
             return False, wait_seconds
         
-        # Check campaign daily limit
-        if campaign_daily_count >= campaign_daily_limit:
-            tomorrow = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-            wait_seconds = int((tomorrow - now).total_seconds())
-            logger.debug(f"Campaign daily limit reached: {campaign_daily_count}/{campaign_daily_limit}")
-            return False, wait_seconds
+        # Campaign-level daily limits are disabled per user request; campaign_daily_limit is ignored.
         
         # Check adaptive minimum interval between emails (per sender)
         if last_send_time > 0:
